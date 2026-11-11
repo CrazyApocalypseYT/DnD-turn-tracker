@@ -6,7 +6,7 @@ When it's your turn, **your device** (and only yours) plays a chime and the scre
 
 ## Features
 
-- **Rooms with a code** – the DM creates a room and gets a 5-character code (plus an invite link). Players join with that code.
+- **Runs on phones and tablets with no setup** – one device hosts the room in the browser; the others join with a 5-character code or a QR code.
 - **Player characters** – each player adds name, class, level, max/current HP, AC (CA), initiative and any number of **custom stats** (Spell DC, Passive Perception, Ki points…).
 - **One friendly NPC per player** – a companion, familiar, pet… with the same fields. Its turn alerts its owner's device.
 - **Unlimited enemies for the DM** – add them one at a time or in batches ("4× Goblin" → Goblin 1–4), optionally **hidden** until you reveal them.
@@ -18,43 +18,58 @@ When it's your turn, **your device** (and only yours) plays a chime and the scre
 - Live list of who is online, plus a shared combat log.
 - Reloading the page or losing connection rejoins automatically. The DM gets a **DM key** to continue as DM on another device.
 
-## Run it locally
+## Two ways to run it
 
-Requires Node.js 18 or newer.
+### A) No server – a phone or tablet hosts the room (recommended)
+
+The whole app is a set of static files (`public/`). Put them on any static web host **once**, then everyone just opens the link – nothing to install on any device.
+
+- The device that taps **Create room** *is* the server: the room lives in that browser (and is saved there, so a reload or browser restart brings it back).
+- The other phones join with the room code or by **scanning the QR code**, and connect **directly** to the host device over WebRTC ([PeerJS](https://peerjs.com/)).
+- The host can be:
+  - **the DM's phone/tablet** (*Create room – I'm the DM*), or
+  - **a tablet in the middle of the table** (*Use this device as the table screen*): it shows the turn order and a big QR code; the DM joins from their phone with the **DM key** shown on the tablet.
+
+**Publishing on GitHub Pages** (workflow included in `.github/workflows/pages.yml`):
+
+1. Repository **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. Push to `main` (or run *Deploy to GitHub Pages* from the **Actions** tab).
+3. Open the URL shown in the workflow run on every device. Tip: *Share → Add to Home Screen* makes it open like an app.
+
+> Check GitHub's current documentation for which plans allow Pages on **private** repositories.
+> Any other static host works too: just upload the contents of `public/`.
+
+**What you should know about this mode**
+
+- Devices need an internet connection when joining: the free public PeerJS service is used to find the host (handshake only). After that, game data flows directly between devices, falling back to PeerJS's public relay (TURN) servers when a direct connection isn't possible. These public services have no uptime guarantee; you can point the app to your own PeerServer in `public/config.js`.
+- **Keep the host device's tracker open with the screen on.** If it sleeps or the browser is closed, the other devices show "Reconnecting to the host…" and reconnect automatically when it's back. The app asks the browser to keep the screen awake (Wake Lock) where supported.
+- Phones whose screen is off may not get the turn sound until they're woken up; when they wake, they reconnect automatically.
+- Turn alerts, damage, editing etc. work the same as in server mode.
+
+### B) With the Node.js server
+
+Use this if you prefer a computer or cloud host to keep the rooms (no WebRTC involved). Requires Node.js 18+.
 
 ```bash
 npm install
 npm start
-# open http://localhost:3000
+# open http://localhost:3000 (other devices on the same Wi-Fi: http://<computer-ip>:3000)
 ```
 
-Other devices on the same Wi-Fi can join via `http://<your-computer-ip>:3000`.
+When served this way the app automatically talks to the server instead of hosting rooms in the browser.
+It runs on any host that supports Node.js and WebSockets (a `Dockerfile` is included); the port comes from `PORT`.
+Rooms are saved to `data/rooms.json` (`DATA_FILE`), and deleted after 14 days unused (`ROOM_TTL_DAYS`). On hosts with an ephemeral filesystem, rooms are lost on redeploy.
 
-Run the tests:
+### Tests
 
 ```bash
 npm test
 ```
 
-## Put it online
-
-It is a single Node.js process (Express + Socket.IO), so it runs on any host that runs Node.js 18+ and supports WebSockets. Check your host's current documentation and pricing.
-
-- **Build command:** `npm install`
-- **Start command:** `npm start`
-- The port is read from the `PORT` environment variable (default `3000`).
-- A `Dockerfile` is included for container-based hosts.
-
-### Data
-
-Rooms are kept in memory and saved to `data/rooms.json` (override with `DATA_FILE`), so a normal restart keeps them.
-On hosts with an ephemeral filesystem, rooms are lost when the server is redeployed or restarted.
-Rooms unused for 14 days are deleted (`ROOM_TTL_DAYS`).
-
 ## How to play
 
-1. **DM:** enter your name → *Create room as DM*. Share the code (click the code to copy the invite link).
-2. **Players:** enter your name and the code → *Join as player*, then fill in your character. Optionally add one friendly NPC.
+1. **Host:** open the site → *Create room – I'm the DM* (or *Use this device as the table screen* on a tablet; the DM then joins with the DM key).
+2. **Players:** scan the QR code (tap **📱 Invite** next to the room code) or type the code → *Join as player*, then fill in your character. Optionally add one friendly NPC.
 3. **DM:** *+ Add enemies*, then **⚔️ Start combat**.
 4. On your turn your screen goes green and chimes. Use **🗡️ Deal damage** (or the *Attack* button on an enemy) to hit enemies, then **End my turn**.
 
@@ -63,8 +78,13 @@ Rooms unused for 14 days are deleted (`ROOM_TTL_DAYS`).
 ## Project layout
 
 ```
-server.js          Express + Socket.IO server, persistence
-src/rooms.js       Game rules: rooms, permissions, damage, turn order, per-player views
-public/            Front-end (plain HTML/CSS/JS, no build step)
-test/              node:test unit + integration tests
+public/              The app (static files – this is all a static host needs)
+  index.html, app.js, style.css
+  net.js             Transports: Node server (Socket.IO), P2P host, P2P guest
+  config.js          Runtime config (p2p vs server, custom PeerServer)
+  shared/rooms.js    Game rules: rooms, permissions, damage, turn order, per-player views
+  shared/hub.js      Request handling, shared by the Node server and the P2P host
+  vendor/            PeerJS 1.5.5 and qrcode-generator 2.0.4 (MIT), refreshed with `npm run vendor`
+server.js            Optional Node.js server (Express + Socket.IO)
+test/                node:test unit + integration tests
 ```

@@ -118,21 +118,54 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
 
   /* ------------------------------------------------------------ */
-  /* socket                                                        */
+  /* networking                                                    */
   /* ------------------------------------------------------------ */
-  const socket = io({ transports: ['websocket', 'polling'] });
+  const { SocketNet, P2PHost, P2PGuest, mode: NET_MODE } = window.DndNet;
+  let net = null; // current transport
+  let socketNet = null; // server mode: one socket for the whole session
   let state = null;
-  let session = store.get('dnd.session'); // { code, name }
+  let session = store.get('dnd.session'); // { code, name, host?, screen? }
   let lastAlertSeq = null;
   let promptedForPc = false;
 
+  const callbacks = {
+    onState(s) {
+      state = s;
+      render();
+    },
+    onStatus({ online, text }) {
+      $('#conn').classList.toggle('off', !online);
+      $('#conn').title = online ? 'Connected' : 'Not connected';
+      const bar = $('#net-status');
+      bar.textContent = text || '';
+      bar.hidden = !text;
+    },
+    async onReconnected() {
+      // after a dropped connection, silently re-join the room
+      if (!session || session.host) return;
+      const res = await net.request('room:join', { clientId, name: session.name, code: session.code });
+      if (!res.ok) {
+        leaveLocal();
+        showLobbyError(res.error);
+      }
+    },
+  };
+
+  function saveHostedRoom(room) {
+    store.set('dnd.hostRoom', room);
+  }
+
+  async function getSocketNet() {
+    if (!socketNet) {
+      socketNet = new SocketNet(callbacks);
+      await socketNet.start();
+    }
+    return socketNet;
+  }
+
   function emit(event, payload) {
-    return new Promise((resolve) => {
-      socket.timeout(8000).emit(event, payload, (err, res) => {
-        if (err) resolve({ ok: false, error: 'The server did not respond. Check your connection.' });
-        else resolve(res || { ok: false, error: 'No response.' });
-      });
-    });
+    if (!net) return Promise.resolve({ ok: false, error: 'Not connected.' });
+    return net.request(event, payload);
   }
 
   async function act(event, payload) {
@@ -141,21 +174,66 @@
     return res;
   }
 
-  socket.on('connect', async () => {
-    $('#conn').classList.remove('off');
-    if (session && session.code) {
-      const res = await emit('room:join', { clientId, name: session.name, code: session.code });
-      if (!res.ok) {
-        leaveLocal();
-        showLobbyError(res.error);
-      }
+  async function createRoom(name, screen) {
+    if (NET_MODE === 'server') {
+      net = await getSocketNet();
+      return net.request('room:create', { clientId, name, screen });
     }
-  });
-  socket.on('disconnect', () => $('#conn').classList.add('off'));
-  socket.on('state', (s) => {
-    state = s;
-    render();
-  });
+    if (net) net.close();
+    net = new P2PHost(callbacks, { clientId, onSave: saveHostedRoom });
+    return net.create(name, screen);
+  }
+
+  async function joinRoom(code, name, dmKey) {
+    if (NET_MODE === 'server') {
+      net = await getSocketNet();
+      return net.request('room:join', { clientId, name, code, dmKey });
+    }
+    if (net) net.close();
+    net = new P2PGuest(callbacks);
+    try {
+      await net.connect(code);
+    } catch (err) {
+      net.close();
+      net = null;
+      return { ok: false, error: err.message };
+    }
+    const res = await net.request('room:join', { clientId, name, code, dmKey });
+    if (!res.ok) { net.close(); net = null; }
+    return res;
+  }
+
+  /** On page load: go back into the room this device was in. */
+  async function resume() {
+    if (!session || !session.code) {
+      if (NET_MODE === 'server') getSocketNet().catch(() => {});
+      return;
+    }
+    if (NET_MODE === 'server') {
+      net = await getSocketNet(); // re-joins in onReconnected
+      return;
+    }
+    let res;
+    if (session.host) {
+      const room = store.get('dnd.hostRoom');
+      if (!room || room.code !== session.code) {
+        leaveLocal();
+        return showLobbyError('The room that was hosted on this device is no longer saved here.');
+      }
+      net = new P2PHost(callbacks, { clientId, onSave: saveHostedRoom });
+      res = await net.restore(room, session.name);
+    } else {
+      showLobbyError('Reconnecting to the room…');
+      res = await joinRoom(session.code, session.name);
+    }
+    if (!res.ok) {
+      leaveLocal();
+      showLobbyError(res.error);
+    } else {
+      showLobbyError('');
+      keepAwake();
+    }
+  }
 
   /* ------------------------------------------------------------ */
   /* lobby                                                         */
@@ -163,57 +241,82 @@
   const params = new URLSearchParams(location.search);
   $('#lobby-name').value = store.get('dnd.name', '');
   if (params.get('room')) $('#lobby-code').value = params.get('room').toUpperCase();
+  if (NET_MODE === 'p2p') $('#host-hint').hidden = false;
 
   function showLobbyError(msg) {
     $('#lobby-error').textContent = msg || '';
   }
 
-  function lobbyName() {
-    const name = $('#lobby-name').value.trim();
+  function lobbyName(fallback) {
+    const name = $('#lobby-name').value.trim() || fallback || '';
     if (!name) {
       showLobbyError('Please enter your name first.');
       $('#lobby-name').focus();
       return null;
     }
-    store.set('dnd.name', name);
+    if ($('#lobby-name').value.trim()) store.set('dnd.name', name);
     return name;
   }
 
-  function enterRoom(code, name) {
-    session = { code, name };
+  function enterRoom(code, name, extra = {}) {
+    session = { code, name, ...extra };
     store.set('dnd.session', session);
     const url = new URL(location.href);
     url.searchParams.set('room', code);
     history.replaceState(null, '', url);
     showLobbyError('');
     keepAwake();
+    render(); // state may have arrived before the session was saved
   }
 
-  $('#btn-create').addEventListener('click', async () => {
-    const name = lobbyName();
+  async function withBusy(btn, fn) {
+    const all = document.querySelectorAll('#lobby button');
+    all.forEach((b) => { b.disabled = true; });
+    const label = btn.textContent;
+    btn.textContent = 'Connecting…';
+    try { await fn(); } finally {
+      all.forEach((b) => { b.disabled = false; });
+      btn.textContent = label;
+    }
+  }
+
+  async function create(screen) {
+    const name = lobbyName(screen ? 'Table screen' : '');
     if (!name) return;
-    const res = await emit('room:create', { clientId, name });
-    if (!res.ok) return showLobbyError(res.error);
-    enterRoom(res.code, name);
-  });
+    unlockAudio();
+    const btn = screen ? $('#btn-create-screen') : $('#btn-create');
+    await withBusy(btn, async () => {
+      const res = await createRoom(name, screen);
+      if (!res.ok) return showLobbyError(res.error);
+      enterRoom(res.code, name, { host: NET_MODE === 'p2p', screen: Boolean(screen) });
+    });
+  }
+  $('#btn-create').addEventListener('click', () => create(false));
+  $('#btn-create-screen').addEventListener('click', () => create(true));
 
   async function join() {
     const name = lobbyName();
     if (!name) return;
     const code = $('#lobby-code').value.trim().toUpperCase();
     if (!code) {
-      showLobbyError('Enter the room code your DM gave you.');
+      showLobbyError('Enter the room code (or scan the QR code on the host device).');
       return $('#lobby-code').focus();
     }
+    unlockAudio();
     const dmKey = $('#lobby-dmkey').value.trim();
-    const res = await emit('room:join', { clientId, name, code, dmKey: dmKey || undefined });
-    if (!res.ok) return showLobbyError(res.error);
-    enterRoom(res.code, name);
+    await withBusy($('#btn-join'), async () => {
+      const res = await joinRoom(code, name, dmKey || undefined);
+      if (!res.ok) return showLobbyError(res.error);
+      enterRoom(res.code, name);
+    });
   }
   $('#btn-join').addEventListener('click', join);
   $('#lobby-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
 
   function leaveLocal() {
+    if (net && net !== socketNet) net.close();
+    if (session && session.host) store.del('dnd.hostRoom');
+    net = socketNet;
     session = null;
     state = null;
     store.del('dnd.session');
@@ -221,27 +324,64 @@
     document.title = 'D&D Turn Tracker';
     $('#game').hidden = true;
     $('#lobby').hidden = false;
+    $('#net-status').hidden = true;
     if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   }
 
   $('#btn-leave').addEventListener('click', async () => {
-    if (!confirm('Leave this room? You can come back later with the same code.')) return;
-    await emit('room:leave', {});
+    const hosting = session && session.host;
+    const msg = hosting
+      ? 'This device is hosting the room. If you leave, the room closes for everyone. Leave anyway?'
+      : 'Leave this room? You can come back later with the same code.';
+    if (!confirm(msg)) return;
+    if (!hosting) await emit('room:leave', {});
     leaveLocal();
   });
 
-  $('#btn-copy').addEventListener('click', async () => {
+  function inviteLink() {
+    const url = new URL(location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('room', state.code);
+    return url.toString();
+  }
+
+  function qrSvg(text) {
+    const qr = window.qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+    const svg = tpl.content.firstElementChild;
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `QR code for ${text}`);
+    return svg;
+  }
+
+  function openInvite() {
     if (!state) return;
-    const link = `${location.origin}${location.pathname}?room=${state.code}`;
+    const link = inviteLink();
+    $('#invite-qr').replaceChildren(qrSvg(link));
+    $('#invite-code').textContent = state.code;
+    $('#invite-link').textContent = link;
+    $('#invite').showModal();
+  }
+  $('#btn-invite').addEventListener('click', openInvite);
+  $('#btn-invite-close').addEventListener('click', () => $('#invite').close());
+
+  $('#btn-share').addEventListener('click', async () => {
+    if (!state) return;
+    const link = inviteLink();
     try {
-      if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+      if (navigator.share) {
         await navigator.share({ title: 'Join my D&D table', text: `Room code: ${state.code}`, url: link });
       } else {
         await navigator.clipboard.writeText(link);
         toast('Invite link copied!');
       }
-    } catch {
-      toast(`Room code: ${state.code}`);
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      try { await navigator.clipboard.writeText(link); toast('Invite link copied!'); } catch { toast(`Room code: ${state.code}`); }
     }
   });
 
@@ -270,6 +410,7 @@
   /* rendering                                                     */
   /* ------------------------------------------------------------ */
   const isDm = () => state && state.you.role === 'dm';
+  const isScreen = () => state && state.you.role === 'screen';
   const byId = (id) => state && state.combatants.find((c) => c.id === id);
   const fmtInit = (n) => String(n);
 
@@ -281,19 +422,22 @@
     const dm = isDm();
     $('#room-code').textContent = state.code;
     const rb = $('#role-badge');
-    rb.textContent = dm ? '👑 Dungeon Master' : `Player · ${state.you.name}`;
-    rb.className = `badge ${dm ? 'dm' : 'player'}`;
-    $('#conn').classList.toggle('off', !socket.connected);
+    const screen = isScreen();
+    rb.textContent = dm ? '👑 Dungeon Master' : screen ? '📺 Table screen' : `Player · ${state.you.name}`;
+    rb.className = `badge ${dm ? 'dm' : screen ? 'screen' : 'player'}`;
+    $('#host-badge').hidden = !(session && session.host);
+    document.body.classList.toggle('screen-mode', screen);
 
     renderTurn();
     renderOrder();
     renderPlayerPanel();
     renderDamage();
     renderDmPanel();
+    renderScreenPanel();
     renderMembers();
     renderLog();
 
-    if (!dm && !promptedForPc && !state.combatants.some((c) => c.mine && c.type === 'pc')) {
+    if (!dm && !screen && !promptedForPc && !state.combatants.some((c) => c.mine && c.type === 'pc')) {
       promptedForPc = true;
       openEditor('pc');
     }
@@ -394,6 +538,8 @@
       if (c.mine) {
         actions.push(...quickHp(c, { allowDamage: true, allowHeal: true }));
         actions.push(h('button', { class: 'btn ghost small', onclick: () => openEditor(c.type, c) }, '✏️ Edit'));
+      } else if (isScreen()) {
+        // the table screen only displays
       } else if (!dm && c.type === 'enemy' && !c.defeated) {
         actions.push(h('button', { class: 'btn danger small', onclick: () => focusDamage(c.id) }, '🗡️ Attack'));
       } else if (!dm && c.type !== 'enemy') {
@@ -442,7 +588,7 @@
 
   function renderPlayerPanel() {
     const panel = $('#player-panel');
-    if (isDm()) { panel.hidden = true; return; }
+    if (isDm() || isScreen()) { panel.hidden = true; return; }
     panel.hidden = false;
     const pc = state.combatants.find((c) => c.mine && c.type === 'pc');
     const comp = state.combatants.find((c) => c.mine && c.type === 'companion');
@@ -458,7 +604,7 @@
 
   function renderDamage() {
     const panel = $('#damage-panel');
-    if (isDm()) { panel.hidden = true; return; }
+    if (isDm() || isScreen()) { panel.hidden = true; return; }
     panel.hidden = false;
     const enemies = state.combatants.filter((c) => c.type === 'enemy' && !c.defeated);
     const mine = state.combatants.filter((c) => c.mine);
@@ -511,6 +657,27 @@
     $('#set-reveal').checked = Boolean(state.settings.revealEnemies);
     $('#dm-key').textContent = state.dmKey || '';
   }
+
+  let screenQrFor = null;
+  function renderScreenPanel() {
+    const screen = isScreen();
+    $('#screen-panel').hidden = !screen;
+    if (!screen) return;
+    const link = inviteLink();
+    if (screenQrFor !== link) {
+      screenQrFor = link;
+      $('#screen-qr').replaceChildren(qrSvg(link));
+    }
+    $('#screen-code').textContent = state.code;
+    const hasDm = state.members.some((m) => m.role === 'dm');
+    $('#screen-dmkey-box').hidden = hasDm;
+    $('#screen-dmkey').textContent = state.dmKey || '';
+  }
+  $('#btn-reveal-key').addEventListener('click', () => {
+    const k = $('#screen-dmkey');
+    k.hidden = !k.hidden;
+    $('#btn-reveal-key').textContent = k.hidden ? 'Show DM key' : 'Hide DM key';
+  });
 
   function renderMembers() {
     const ul = $('#members');
@@ -593,7 +760,7 @@
     $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s.key, s.value)));
     $('#btn-delete').hidden = !c;
     dlg.showModal();
-    setTimeout(() => f.name.focus(), 30);
+    f.name.focus(); // no delayed focus: it could steal typing from another field
   }
 
   $('#btn-cancel').addEventListener('click', () => dlg.close());
@@ -634,4 +801,6 @@
     dlg.close();
     toast(editing.id ? 'Saved.' : 'Added!');
   });
+
+  resume();
 })();

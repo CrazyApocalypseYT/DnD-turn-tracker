@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const g = require('../src/rooms');
+const g = require('../public/shared/rooms');
 
 function setup() {
   const room = g.createRoom(new Set(), 'dm-secret', 'Dungeon Master');
@@ -179,4 +179,23 @@ test('inputs are clamped and sanitized', () => {
   assert.equal(c.ac, 10);
   assert.equal(c.level, 30);
   assert.equal(c.initiative, 12.5);
+});
+
+test('a tablet can host as a table screen; the DM joins with the DM key', () => {
+  const room = g.createRoom(new Set(), 'tablet', 'Table', { screen: true });
+  assert.equal(room.members.tablet.role, 'screen');
+  assert.equal(g.viewFor(room, 'tablet').dmKey, room.dmKey, 'the screen can show the DM key');
+  assert.throws(() => g.saveCombatant(room, 'tablet', pc('X', 1)), /only displays/);
+  g.joinRoom(room, 'p1', 'Alice');
+  assert.equal(g.viewFor(room, 'p1').dmKey, undefined);
+  assert.throws(() => g.startCombat(room, 'p1'), /Only the Dungeon Master/);
+  g.joinRoom(room, 'gm-phone', 'Gina', room.dmKey);
+  assert.equal(room.members['gm-phone'].role, 'dm');
+  assert.equal(room.members.tablet.role, 'screen');
+  const [gob] = g.saveCombatant(room, 'gm-phone', { type: 'enemy', name: 'Goblin', hpMax: 7 });
+  assert.throws(() => g.changeHp(room, 'tablet', { targetId: gob.id, amount: 1, mode: 'damage' }), /only displays/);
+  g.saveCombatant(room, 'p1', pc('Aria', 15));
+  g.startCombat(room, 'gm-phone');
+  assert.equal(g.viewFor(room, 'tablet').yourTurn, false);
+  assert.deepEqual(g.viewFor(room, 'tablet').members.map((m) => m.role), ['dm', 'screen', 'player']);
 });

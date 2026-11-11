@@ -118,6 +118,8 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 0
 .badge.pc { background: var(--pc); color: #fff; }
 .badge.companion { background: var(--companion); color: #0b2620; }
 .badge.hidden-b { background: #555; color: #ddd; }
+.badge.screen { background: #49c2a4; color: #0b2620; }
+.badge.host { background: #2b2536; border: 1px solid var(--line); text-transform: none; }
 .conn { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
 .conn.off { background: var(--danger); }
 
@@ -252,4 +254,24 @@ body.your-turn .card.mine { background: #12652d; }
 @media (prefers-reduced-motion: reduce) {
   #flash.go { animation-duration: 0.8s; }
   .card, .card.current { transition: none; transform: none; }
+}
+
+/* ---------- p2p / invite / table screen ---------- */
+.hint { background: #1b2a3f; border: 1px solid #2d4a73; border-radius: 10px; padding: 0.6rem 0.75rem; margin: 0.6rem 0 0; }
+.net-status {
+  background: #5a3b12; border: 1px solid #a8742a; color: #ffe2b0;
+  border-radius: 10px; padding: 0.55rem 0.8rem; margin-bottom: 0.75rem; font-size: 0.9rem;
+}
+.qr { background: #fff; border-radius: 12px; padding: 0.6rem; width: min(280px, 100%); margin: 0.4rem auto; }
+.qr svg { display: block; width: 100%; height: auto; }
+.center { text-align: center; }
+.big-code { display: block; font-size: 2rem; letter-spacing: 0.3em; margin-top: 0.2rem; }
+.link { overflow-wrap: anywhere; color: var(--muted); text-align: center; }
+#invite { width: min(420px, calc(100vw - 1.5rem)); }
+
+/* table screen: bigger, easier to read from across the table */
+body.screen-mode .turn-name { font-size: 1.8rem; }
+body.screen-mode .c-name { font-size: 1.15rem; }
+@media (min-width: 861px) {
+  body.screen-mode .qr { width: 220px; }
 }

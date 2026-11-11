@@ -1,9 +1,10 @@
-'use strict';
-
 /**
  * Pure game/room logic for the D&D turn tracker.
  *
- * Rooms are plain JSON objects so they can be persisted to disk as-is.
+ * This file runs both in Node.js (server mode) and in the browser (when a
+ * tablet/phone hosts the room itself), so it has no dependencies.
+ *
+ * Rooms are plain JSON objects so they can be persisted as-is.
  * Every mutating function takes the requesting client's secret `clientId`
  * and throws a GameError when the request is invalid or not allowed.
  *
@@ -13,8 +14,20 @@
  *  - each member also gets a public `id` that is safe to share.
  *  - enemies have no owner: whoever is currently the DM controls them.
  */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.DndRooms = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+'use strict';
 
-const crypto = require('crypto');
+function randomBytes(n) {
+  const out = new Uint8Array(n);
+  const c = typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues
+    ? globalThis.crypto
+    : require('crypto').webcrypto;
+  c.getRandomValues(out);
+  return out;
+}
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 const CODE_LENGTH = 5;
@@ -36,12 +49,12 @@ const TYPES = ['pc', 'companion', 'enemy'];
 class GameError extends Error {}
 
 function randomId(bytes = 9) {
-  return crypto.randomBytes(bytes).toString('base64url');
+  return Array.from(randomBytes(bytes), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function randomCode(length = CODE_LENGTH) {
   let out = '';
-  const bytes = crypto.randomBytes(length);
+  const bytes = randomBytes(length);
   for (let i = 0; i < length; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
   return out;
 }
@@ -97,7 +110,12 @@ function cleanName(name) {
 /* Room lifecycle                                                      */
 /* ------------------------------------------------------------------ */
 
-function createRoom(existingCodes, clientId, playerName) {
+/**
+ * Create a room. The creator is the DM, unless `opts.screen` is set: then the
+ * creating device is a shared "table screen" (it hosts and shows the fight
+ * but cannot act), and the DM joins from their own phone with the DM key.
+ */
+function createRoom(existingCodes, clientId, playerName, opts = {}) {
   if (!clientId) throw new GameError('Missing client id.');
   const name = cleanName(playerName);
   let code;
@@ -116,8 +134,13 @@ function createRoom(existingCodes, clientId, playerName) {
     settings: { revealEnemies: false },
     log: [],
   };
-  room.members[clientId] = { id: randomId(), name, role: 'dm', joinedAt: now };
-  addLog(room, `${name} created the room and is the Dungeon Master.`);
+  if (opts.screen) {
+    room.members[clientId] = { id: randomId(), name, role: 'screen', joinedAt: now };
+    addLog(room, `${name} (table screen) created the room. The DM joins with the DM key.`);
+  } else {
+    room.members[clientId] = { id: randomId(), name, role: 'dm', joinedAt: now };
+    addLog(room, `${name} created the room and is the Dungeon Master.`);
+  }
   return room;
 }
 
@@ -146,6 +169,7 @@ function joinRoom(room, clientId, playerName, dmKey) {
     member.name = name;
   }
 
+  if (wantsDm && member.role === 'screen') throw new GameError('The table screen cannot become the DM.');
   if (wantsDm && member.role !== 'dm') {
     for (const m of Object.values(room.members)) if (m.role === 'dm') m.role = 'player';
     member.role = 'dm';
@@ -271,6 +295,7 @@ function saveCombatant(room, clientId, input) {
   }
 
   // pc / companion: one of each per player
+  if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
   if (member.role === 'dm') throw new GameError('The Dungeon Master controls enemies; players add their own characters.');
   const already = room.combatants.find((c) => c.owner === member.id && c.type === type);
   if (already) {
@@ -309,6 +334,7 @@ function changeHp(room, clientId, { targetId, amount, mode, attackerId } = {}) {
   const value = int(amount, 0, 9999, 0);
   if (value <= 0) throw new GameError('Enter an amount greater than 0.');
   if (mode !== 'damage' && mode !== 'heal') throw new GameError('Invalid action.');
+  if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
 
   const isDm = member.role === 'dm';
   if (!isDm) {
@@ -494,6 +520,8 @@ function hpStatus(c) {
  * Build the state a given client is allowed to see. Secret client ids and
  * the DM key never leave the server except the DM key for the DM.
  */
+const ROLE_ORDER = { dm: 0, screen: 1, player: 2 };
+
 function viewFor(room, clientId, isOnline = () => false) {
   const me = room.members[clientId];
   if (!me) return null;
@@ -534,10 +562,10 @@ function viewFor(room, clientId, isOnline = () => false) {
   return {
     code: room.code,
     you: { id: me.id, name: me.name, role: me.role },
-    dmKey: isDm ? room.dmKey : undefined,
+    dmKey: isDm || me.role === 'screen' ? room.dmKey : undefined,
     members: Object.entries(room.members)
       .map(([cid, m]) => ({ id: m.id, name: m.name, role: m.role, online: isOnline(cid) }))
-      .sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name) : a.role === 'dm' ? -1 : 1)),
+      .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name)),
     combatants,
     combat: {
       active: room.combat.active,
@@ -554,7 +582,7 @@ function viewFor(room, clientId, isOnline = () => false) {
   };
 }
 
-module.exports = {
+return {
   GameError,
   LIMITS,
   normalizeCode,
@@ -577,3 +605,4 @@ module.exports = {
   viewFor,
   hpStatus,
 };
+});

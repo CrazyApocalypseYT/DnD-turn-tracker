@@ -5,7 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#16131c" />
   <title>D&amp;D Turn Tracker</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Turn Tracker" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -15,7 +21,7 @@
   <main id="lobby" class="lobby">
     <div class="lobby-card">
       <h1>🎲 D&amp;D Turn Tracker</h1>
-      <p class="muted">Share one code with your table. Everyone sees the same initiative order in real time, and your device lights up green when it's your turn.</p>
+      <p class="muted">Open this page on every phone and tablet at the table. One device hosts the room, the others join with the code or by scanning the QR code. Your device lights up green when it's your turn.</p>
 
       <label class="field">
         <span>Your name</span>
@@ -40,9 +46,12 @@
         </section>
         <div class="or">or</div>
         <section>
-          <h2>Run a game</h2>
-          <p class="muted small">Create a new room. You'll be the Dungeon Master and can add as many enemies as you want.</p>
-          <button id="btn-create" class="btn accent wide">Create room as DM</button>
+          <h2>Host a game</h2>
+          <button id="btn-create" class="btn accent wide">👑 Create room – I'm the DM</button>
+          <p class="muted small">You run the enemies from this device.</p>
+          <button id="btn-create-screen" class="btn ghost wide">📺 Use this device as the table screen</button>
+          <p class="muted small">E.g. a tablet in the middle of the table: it shows the turn order and a QR code, the DM joins from their phone with the DM key.</p>
+          <p id="host-hint" class="hint small" hidden>📡 No server needed: the device that creates the room <strong>is</strong> the server. Keep the tracker open and the screen on during the session (it stays awake automatically where supported).</p>
         </section>
       </div>
       <p id="lobby-error" class="error" role="alert"></p>
@@ -53,12 +62,13 @@
   <main id="game" class="game" hidden>
     <header class="topbar">
       <div class="room-info">
-        <button id="btn-copy" class="room-code" title="Copy invite link">
+        <button id="btn-invite" class="room-code" title="Invite players (QR code)">
           <span class="muted small">Room</span>
           <strong id="room-code">-----</strong>
-          <span class="small">📋</span>
+          <span class="small">📱 Invite</span>
         </button>
         <span id="role-badge" class="badge"></span>
+        <span id="host-badge" class="badge host" title="This device is the server for this room" hidden>📡 Hosting</span>
         <span id="conn" class="conn" title="Connection"></span>
       </div>
       <div class="top-actions">
@@ -67,6 +77,8 @@
         <button id="btn-leave" class="btn ghost">Leave</button>
       </div>
     </header>
+
+    <div id="net-status" class="net-status" role="status" hidden></div>
 
     <section id="turn-banner" class="turn-banner">
       <div class="turn-text">
@@ -93,6 +105,18 @@
       </section>
 
       <aside class="side">
+        <!-- table screen: big QR to join -->
+        <section id="screen-panel" class="panel screen-panel" hidden>
+          <h2>📱 Scan to join</h2>
+          <div id="screen-qr" class="qr"></div>
+          <p class="center">Room code <strong id="screen-code" class="big-code"></strong></p>
+          <div id="screen-dmkey-box" class="center">
+            <p class="muted small">The DM joins from their phone with the DM key ("I'm the DM on a new device").</p>
+            <button id="btn-reveal-key" class="btn ghost small">Show DM key</button>
+            <p><code id="screen-dmkey" hidden></code></p>
+          </div>
+        </section>
+
         <!-- player panel -->
         <section id="player-panel" class="panel" hidden>
           <h2>Your party</h2>
@@ -217,9 +241,28 @@
     </form>
   </dialog>
 
+  <!-- ========================= invite dialog ========================= -->
+  <dialog id="invite">
+    <h2>📱 Invite players</h2>
+    <p class="muted small">Scan with the phone camera, or open the site and type the code.</p>
+    <div id="invite-qr" class="qr"></div>
+    <p class="center">Room code <strong id="invite-code" class="big-code"></strong></p>
+    <p id="invite-link" class="link small"></p>
+    <div class="dialog-actions">
+      <button type="button" id="btn-share" class="btn primary">Share / copy link</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-invite-close" class="btn ghost">Close</button>
+    </div>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="config.js"></script>
+  <script src="vendor/peerjs.min.js"></script>
+  <script src="vendor/qrcode.js"></script>
+  <script src="shared/rooms.js"></script>
+  <script src="shared/hub.js"></script>
+  <script src="net.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

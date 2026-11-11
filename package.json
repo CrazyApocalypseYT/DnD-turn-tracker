@@ -1,13 +1,14 @@
 {
   "name": "dnd-turn-tracker",
   "version": "1.0.0",
-  "description": "Online multiplayer D&D initiative / turn tracker. Players join with a room code and share the turn order in real time.",
+  "description": "D&D initiative / turn tracker for phones and tablets. One device hosts the room in the browser (no server needed); the others join by code or QR.",
   "main": "server.js",
   "private": true,
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "vendor": "cp node_modules/peerjs/dist/peerjs.min.js public/vendor/ && sed -i \"/sourceMappingURL/d\" public/vendor/peerjs.min.js && cp node_modules/qrcode-generator/dist/qrcode.js public/vendor/"
   },
   "engines": {
     "node": ">=18"
@@ -18,6 +19,9 @@
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
+    "peer": "^1.0.2",
+    "peerjs": "^1.5.5",
+    "qrcode-generator": "^2.0.4",
     "socket.io-client": "^4.8.1"
   }
 }
