@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#16131c" />
+  <title>D&amp;D Turn Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="flash" aria-hidden="true"></div>
+
+  <!-- ============================== LOBBY ============================== -->
+  <main id="lobby" class="lobby">
+    <div class="lobby-card">
+      <h1>🎲 D&amp;D Turn Tracker</h1>
+      <p class="muted">Share one code with your table. Everyone sees the same initiative order in real time, and your device lights up green when it's your turn.</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="lobby-name" maxlength="30" autocomplete="nickname" placeholder="e.g. Federico" />
+      </label>
+
+      <div class="lobby-split">
+        <section>
+          <h2>Join a game</h2>
+          <label class="field">
+            <span>Room code</span>
+            <input id="lobby-code" maxlength="8" autocapitalize="characters" autocomplete="off" placeholder="ABCDE" class="code-input" />
+          </label>
+          <details class="dm-key">
+            <summary>I'm the DM on a new device</summary>
+            <label class="field">
+              <span>DM key</span>
+              <input id="lobby-dmkey" maxlength="8" autocapitalize="characters" autocomplete="off" placeholder="Shown to the DM in the room" />
+            </label>
+          </details>
+          <button id="btn-join" class="btn primary wide">Join as player</button>
+        </section>
+        <div class="or">or</div>
+        <section>
+          <h2>Run a game</h2>
+          <p class="muted small">Create a new room. You'll be the Dungeon Master and can add as many enemies as you want.</p>
+          <button id="btn-create" class="btn accent wide">Create room as DM</button>
+        </section>
+      </div>
+      <p id="lobby-error" class="error" role="alert"></p>
+    </div>
+  </main>
+
+  <!-- ============================== GAME ============================== -->
+  <main id="game" class="game" hidden>
+    <header class="topbar">
+      <div class="room-info">
+        <button id="btn-copy" class="room-code" title="Copy invite link">
+          <span class="muted small">Room</span>
+          <strong id="room-code">-----</strong>
+          <span class="small">📋</span>
+        </button>
+        <span id="role-badge" class="badge"></span>
+        <span id="conn" class="conn" title="Connection"></span>
+      </div>
+      <div class="top-actions">
+        <button id="btn-sound" class="btn ghost" title="Toggle sound">🔊</button>
+        <button id="btn-test" class="btn ghost" title="Test the turn alert">Test alert</button>
+        <button id="btn-leave" class="btn ghost">Leave</button>
+      </div>
+    </header>
+
+    <section id="turn-banner" class="turn-banner">
+      <div class="turn-text">
+        <div id="turn-round" class="muted small"></div>
+        <div id="turn-name" class="turn-name">Waiting for combat to start…</div>
+      </div>
+      <div class="turn-actions">
+        <button id="btn-prev" class="btn ghost dm-only" hidden>◀ Prev</button>
+        <button id="btn-next" class="btn primary" hidden>End turn ▶</button>
+        <button id="btn-start" class="btn accent dm-only" hidden>⚔️ Start combat</button>
+        <button id="btn-end" class="btn danger ghost dm-only" hidden>End combat</button>
+      </div>
+    </section>
+
+    <div class="layout">
+      <!-- initiative -->
+      <section class="panel order-panel">
+        <div class="panel-head">
+          <h2>Initiative order</h2>
+          <span id="order-count" class="muted small"></span>
+        </div>
+        <ol id="order" class="order"></ol>
+        <p id="order-empty" class="muted empty">No one is here yet. Players add their characters, the DM adds enemies.</p>
+      </section>
+
+      <aside class="side">
+        <!-- player panel -->
+        <section id="player-panel" class="panel" hidden>
+          <h2>Your party</h2>
+          <div id="my-pc"></div>
+          <div id="my-companion"></div>
+        </section>
+
+        <!-- deal damage -->
+        <section id="damage-panel" class="panel" hidden>
+          <h2>🗡️ Deal damage</h2>
+          <form id="damage-form" class="damage-form">
+            <label class="field" id="attacker-field">
+              <span>Attacker</span>
+              <select id="dmg-attacker"></select>
+            </label>
+            <label class="field">
+              <span>Target</span>
+              <select id="dmg-target" required></select>
+            </label>
+            <label class="field">
+              <span>Damage</span>
+              <input id="dmg-amount" type="number" inputmode="numeric" min="1" max="9999" required placeholder="0" />
+            </label>
+            <button class="btn danger wide" type="submit">Hit!</button>
+          </form>
+          <p id="damage-empty" class="muted small" hidden>No enemies to hit right now.</p>
+        </section>
+
+        <!-- DM panel -->
+        <section id="dm-panel" class="panel" hidden>
+          <h2>👑 Dungeon Master</h2>
+          <button id="btn-add-enemy" class="btn accent wide">+ Add enemies</button>
+          <label class="toggle">
+            <input type="checkbox" id="set-reveal" />
+            <span>Show enemy HP, AC &amp; stats to players</span>
+          </label>
+          <div class="dm-key-box">
+            <span class="muted small">DM key (to continue as DM on another device):</span>
+            <code id="dm-key"></code>
+          </div>
+        </section>
+
+        <!-- members -->
+        <section class="panel">
+          <h2>At the table</h2>
+          <ul id="members" class="members"></ul>
+        </section>
+
+        <!-- log -->
+        <section class="panel">
+          <h2>Log</h2>
+          <ul id="log" class="log"></ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ===================== combatant editor dialog ===================== -->
+  <dialog id="editor">
+    <form id="editor-form" method="dialog">
+      <h2 id="editor-title">Character</h2>
+      <div class="grid">
+        <label class="field span2">
+          <span>Name *</span>
+          <input name="name" required maxlength="40" />
+        </label>
+        <label class="field" data-for="pc companion">
+          <span id="cls-label">Class</span>
+          <input name="cls" maxlength="40" />
+        </label>
+        <label class="field" data-for="pc companion">
+          <span>Level</span>
+          <input name="level" type="number" inputmode="numeric" min="0" max="30" value="1" />
+        </label>
+        <label class="field">
+          <span>Max HP *</span>
+          <input name="hpMax" type="number" inputmode="numeric" min="1" max="9999" required value="10" />
+        </label>
+        <label class="field">
+          <span>Current HP</span>
+          <input name="hp" type="number" inputmode="numeric" min="0" max="9999" placeholder="= max" />
+        </label>
+        <label class="field">
+          <span>AC (CA)</span>
+          <input name="ac" type="number" inputmode="numeric" min="0" max="50" value="10" />
+        </label>
+        <label class="field">
+          <span>Initiative</span>
+          <div class="with-btn">
+            <input name="initiative" type="number" inputmode="decimal" step="any" min="-20" max="99" value="0" />
+            <button type="button" id="btn-roll" class="btn ghost" title="Roll d20 + initiative bonus">🎲</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>Init. bonus (for 🎲)</span>
+          <input name="initBonus" type="number" inputmode="numeric" min="-10" max="20" value="0" />
+        </label>
+        <label class="field" data-for="enemy-new">
+          <span>How many</span>
+          <input name="count" type="number" inputmode="numeric" min="1" max="20" value="1" />
+        </label>
+        <label class="toggle span2" data-for="enemy">
+          <input type="checkbox" name="hidden" />
+          <span>Hidden from players (reveal later)</span>
+        </label>
+      </div>
+
+      <div class="stats-head">
+        <h3>Custom stats</h3>
+        <button type="button" id="btn-add-stat" class="btn ghost small">+ Add stat</button>
+      </div>
+      <p class="muted small">Anything you want to track: Spell save DC, Passive Perception, Speed, Ki points…</p>
+      <div id="stats" class="stats-edit"></div>
+
+      <p id="editor-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="btn-delete" class="btn danger ghost">Remove</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-cancel" class="btn ghost">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
