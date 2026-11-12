@@ -80,7 +80,7 @@ npm test
 3. **DM:** *+ Add enemies*, then **⚔️ Start combat**.
 4. On your turn your screen goes green and chimes. Use **🗡️ Deal damage** (or the *Attack* button on an enemy) to hit enemies, then **End my turn**.
 
-> Browsers only allow sound after you've interacted with the page, so tap anywhere once after opening it. Use **Test alert** to check the sound and the green flash.
+> Browsers only allow sound after you've interacted with the page, so tap anywhere once after opening it.
 
 ## Project layout
 

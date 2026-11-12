@@ -392,7 +392,6 @@
     updateSoundButton();
     if (soundOn) { unlockAudio(); chime(); }
   });
-  $('#btn-test').addEventListener('click', () => { unlockAudio(); turnAlert(); });
   updateSoundButton();
 
   /* ------------------------------------------------------------ */
