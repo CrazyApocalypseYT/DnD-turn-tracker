@@ -30,11 +30,11 @@ The whole app is a set of static files (`public/`). Put them on any static web h
   - **the DM's phone/tablet** (*Create room – I'm the DM*), or
   - **a tablet in the middle of the table** (*Use this device as the table screen*): it shows the turn order and a big QR code; the DM joins from their phone with the **DM key** shown on the tablet.
 
-**Publishing on GitHub Pages** (workflow included in `.github/workflows/pages.yml`):
+**Publishing on GitHub Pages:**
 
-1. Repository **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-2. Push to `main` (or run *Deploy to GitHub Pages* from the **Actions** tab).
-3. Open the URL shown in the workflow run on every device. Tip: *Share → Add to Home Screen* makes it open like an app.
+1. Repository **Settings → Pages → Build and deployment → Source: Deploy from a branch**, branch **main**, folder **/ (root)**.
+2. Wait for the *pages build and deployment* run in the **Actions** tab to finish, then open `https://<user>.github.io/<repo>/` on every device. The root `index.html` forwards to the app in `public/` (invite links with `?room=CODE` keep working), and `.nojekyll` makes GitHub serve the files as they are.
+3. Tip: *Share → Add to Home Screen* makes it open like an app.
 
 > Check GitHub's current documentation for which plans allow Pages on **private** repositories.
 > Any other static host works too: just upload the contents of `public/`.
@@ -78,6 +78,7 @@ npm test
 ## Project layout
 
 ```
+index.html, .nojekyll  Forward GitHub Pages visitors from the repo root to public/
 public/              The app (static files – this is all a static host needs)
   index.html, app.js, style.css
   net.js             Transports: Node server (Socket.IO), P2P host, P2P guest
