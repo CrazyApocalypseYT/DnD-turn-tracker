@@ -61,11 +61,11 @@
         attach(conn, room, cid);
         return { code: room.code };
       },
-      'room:join'(conn, { clientId, name, code, dmKey }) {
+      'room:join'(conn, { clientId, name, code, dmKey, screen }) {
         const cid = String(clientId || '').slice(0, 64);
         const room = rooms.get(game.normalizeCode(code));
         if (!room) throw new game.GameError('No room with that code. Check the code and try again.');
-        game.joinRoom(room, cid, name, dmKey);
+        game.joinRoom(room, cid, name, dmKey, { screen: Boolean(screen) });
         attach(conn, room, cid);
         return { code: room.code };
       },
@@ -87,6 +87,9 @@
       'turn:prev': (conn, _p, room) => game.prevTurn(room, conn.clientId),
       'turn:set': (conn, { id }, room) => game.setTurn(room, conn.clientId, id),
       'settings:update': (conn, p, room) => game.updateSettings(room, conn.clientId, p),
+      'stat:adjust'(conn, p, room) {
+        game.adjustStat(room, conn.clientId, p);
+      },
     };
 
     /**

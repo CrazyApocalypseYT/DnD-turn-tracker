@@ -82,7 +82,7 @@ const io = new Server(server, {
 const EVENTS = [
   'room:create', 'room:join', 'room:leave',
   'combatant:save', 'combatant:remove', 'hp:change',
-  'combat:start', 'combat:end', 'turn:next', 'turn:prev', 'turn:set', 'settings:update',
+  'combat:start', 'combat:end', 'turn:next', 'turn:prev', 'turn:set', 'settings:update', 'stat:adjust',
 ];
 
 io.on('connection', (socket) => {

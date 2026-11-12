@@ -86,12 +86,43 @@ function initiativeValue(value, fallback = 0) {
   return Math.round(Math.min(99, Math.max(-20, n)) * 100) / 100;
 }
 
+const BAR_COLORS = ['blue', 'purple', 'yellow', 'orange', 'teal', 'pink', 'gray'];
+
+/** Pick a sensible default bar color from the stat's name. */
+function defaultBarColor(key) {
+  const k = key.toLowerCase();
+  if (/mana|spell|slot|magic|ki|sorcery|arcan/.test(k)) return 'blue';
+  if (/move|movement|speed|stamina|feet|ft/.test(k)) return 'yellow';
+  if (/rage|fury|superiority|action surge/.test(k)) return 'orange';
+  if (/shield|temp|ward/.test(k)) return 'teal';
+  return 'purple';
+}
+
+function isBlank(v) {
+  return v === undefined || v === null || String(v).trim() === '';
+}
+
+/**
+ * Custom stats. A stat with a `max` is shown as a bar (e.g. Mana 12/20,
+ * Movement 30/30); otherwise it's a text chip (e.g. Spell DC 15).
+ * Bars can refill automatically at the start of their creature's turn.
+ */
 function cleanStats(stats) {
   if (!Array.isArray(stats)) return [];
   const out = [];
   for (const s of stats) {
     if (!s || typeof s !== 'object') continue;
     const key = str(s.key, LIMITS.statKey);
+    if (!isBlank(s.max)) {
+      const max = int(s.max, 1, 9999, 0);
+      if (max > 0) {
+        const value = isBlank(s.value) ? max : int(s.value, 0, max, max);
+        const color = BAR_COLORS.includes(s.color) ? s.color : defaultBarColor(key);
+        out.push({ key: key || 'Resource', value, max, color, refill: Boolean(s.refill) });
+        if (out.length >= LIMITS.stats) break;
+        continue;
+      }
+    }
     const value = str(s.value, LIMITS.statValue);
     if (!key && !value) continue;
     out.push({ key: key || 'Stat', value });
@@ -99,6 +130,8 @@ function cleanStats(stats) {
   }
   return out;
 }
+
+const isBar = (s) => typeof s.max === 'number';
 
 function cleanName(name) {
   const n = str(name, 30);
@@ -135,7 +168,7 @@ function createRoom(existingCodes, clientId, playerName, opts = {}) {
     log: [],
   };
   if (opts.screen) {
-    room.members[clientId] = { id: randomId(), name, role: 'screen', joinedAt: now };
+    room.members[clientId] = { id: randomId(), name, role: 'screen', creator: true, joinedAt: now };
     addLog(room, `${name} (table screen) created the room. The DM joins with the DM key.`);
   } else {
     room.members[clientId] = { id: randomId(), name, role: 'dm', joinedAt: now };
@@ -147,9 +180,10 @@ function createRoom(existingCodes, clientId, playerName, opts = {}) {
 /**
  * Join (or re-join) a room. A known clientId keeps its role.
  * Passing the room's DM key makes the caller the DM (the previous DM
- * becomes a regular player).
+ * becomes a regular player). `opts.screen` joins a new device as a
+ * table display (view only).
  */
-function joinRoom(room, clientId, playerName, dmKey) {
+function joinRoom(room, clientId, playerName, dmKey, opts = {}) {
   if (!clientId) throw new GameError('Missing client id.');
   const name = cleanName(playerName);
   let member = room.members[clientId];
@@ -161,9 +195,13 @@ function joinRoom(room, clientId, playerName, dmKey) {
 
   if (!member) {
     if (Object.keys(room.members).length >= LIMITS.members) throw new GameError('This room is full.');
-    member = { id: randomId(), name, role: 'player', joinedAt: Date.now() };
+    const screen = Boolean(opts.screen) && !wantsDm;
+    member = { id: randomId(), name, role: screen ? 'screen' : 'player', joinedAt: Date.now() };
     room.members[clientId] = member;
-    addLog(room, `${name} joined the room.`);
+    const joined = screen
+      ? (/display|screen/i.test(name) ? `📺 ${name} joined.` : `📺 ${name} joined as a table display.`)
+      : `${name} joined the room.`;
+    addLog(room, joined);
   } else if (member.name !== name) {
     addLog(room, `${member.name} is now called ${name}.`);
     member.name = name;
@@ -396,10 +434,12 @@ function eligible(room) {
   return sortedCombatants(room).filter((c) => !c.hidden && !(c.type === 'enemy' && c.hp <= 0));
 }
 
-function setCurrent(room, c) {
+function setCurrent(room, c, { refill = true } = {}) {
   room.combat.turnId = c.id;
   room.combat.cursor = sortKey(c);
   room.combat.seq += 1;
+  // bars marked "refills every turn" (e.g. movement) fill up when the turn starts
+  if (refill) for (const s of c.stats || []) if (isBar(s) && s.refill) s.value = s.max;
 }
 
 /**
@@ -433,7 +473,7 @@ function advance(room, dir) {
       room.combat.round = Math.max(1, room.combat.round - 1);
     }
   }
-  setCurrent(room, next);
+  setCurrent(room, next, { refill: dir > 0 });
   return next;
 }
 
@@ -494,6 +534,19 @@ function setTurn(room, clientId, id) {
   if (c.hidden) throw new GameError('Reveal this creature first.');
   setCurrent(room, c);
   touch(room);
+}
+
+/** Change a bar stat by `delta`, or set it to `value`. Owner or DM. */
+function adjustStat(room, clientId, { id, index, delta, value } = {}) {
+  const member = getMember(room, clientId);
+  const c = findCombatant(room, id);
+  if (!canControl(room, member, c)) throw new GameError('You cannot change this creature.');
+  const s = c.stats[int(index, 0, LIMITS.stats, -1)];
+  if (!s || !isBar(s)) throw new GameError('That bar no longer exists.');
+  const next = isBlank(value) ? s.value + int(delta, -9999, 9999, 0) : int(value, 0, s.max, s.value);
+  s.value = Math.min(s.max, Math.max(0, next));
+  touch(room);
+  return s;
 }
 
 function updateSettings(room, clientId, settings = {}) {
@@ -562,7 +615,7 @@ function viewFor(room, clientId, isOnline = () => false) {
   return {
     code: room.code,
     you: { id: me.id, name: me.name, role: me.role },
-    dmKey: isDm || me.role === 'screen' ? room.dmKey : undefined,
+    dmKey: isDm || (me.role === 'screen' && me.creator) ? room.dmKey : undefined,
     members: Object.entries(room.members)
       .map(([cid, m]) => ({ id: m.id, name: m.name, role: m.role, online: isOnline(cid) }))
       .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name)),
@@ -600,6 +653,8 @@ return {
   prevTurn,
   setTurn,
   updateSettings,
+  adjustStat,
+  BAR_COLORS,
   sortedCombatants,
   eligible,
   viewFor,

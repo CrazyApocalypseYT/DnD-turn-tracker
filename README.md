@@ -7,12 +7,18 @@ When it's your turn, **your device** (and only yours) plays a chime and the scre
 ## Features
 
 - **Runs on phones and tablets with no setup** – one device hosts the room in the browser; the others join with a 5-character code or a QR code.
-- **Player characters** – each player adds name, class, level, max/current HP, AC (CA), initiative and any number of **custom stats** (Spell DC, Passive Perception, Ki points…).
+- **Player characters** – each player adds name, class, level, max/current HP, AC (CA), initiative and any number of **custom stats**:
+  - text stats shown as chips (Spell DC 15, Passive Perception 14…);
+  - **bar stats** – give a stat a *Max* and it's drawn as a colored bar under the HP bar (Mana 12/20, Movement 30/30, Ki, Rage…). Whoever controls the creature can tap −/+ or set the exact value. Tick **Refills every turn** and it fills back up when that creature's turn starts (great for movement). Quick-add buttons for Mana and Movement.
 - **One friendly NPC per player** – a companion, familiar, pet… with the same fields. Its turn alerts its owner's device.
 - **Unlimited enemies for the DM** – add them one at a time or in batches ("4× Goblin" → Goblin 1–4), optionally **hidden** until you reveal them.
 - **Deal damage** – players pick an enemy and an amount and hit it. Players can also damage/heal their own creatures and heal other players' creatures; the DM can change anyone's HP.
 - **Secret enemy stats** – by default players only see an enemy's condition (Unharmed / Injured / Bloodied / Near death / Defeated), not its HP, AC or stats. The DM can toggle this.
 - **Turn order** – sorted by initiative (decimals allowed to break ties, 🎲 button rolls d20 + bonus). Defeated enemies and hidden creatures are skipped; rounds are counted.
+- **Three kinds of device**
+  - **DM** – runs enemies, turns and HP.
+  - **Player** – their character, one friendly NPC, deal damage, turn alerts.
+  - **Table display** (made for a tablet) – a big battle board for everyone to look at: *now* playing (ally or enemy, HP and bars), *up next*, an initiative strip, and separate **🛡️ Allies** / **⚔️ Enemies** columns, plus the last events and a QR code to join. Choose *Host on this device as table display* or *Join as table display* in the lobby. It never sees secrets (hidden enemies, enemy HP/AC unless the DM reveals them).
 - **Your-turn alert** – chime (Web Audio, no files), green flash, green screen while it's your turn, vibration where the browser supports it. The screen is kept awake (Wake Lock) where supported.
 - The player whose turn it is can press **End my turn**; the DM can go next/previous or give the turn to anyone.
 - Live list of who is online, plus a shared combat log.
@@ -28,7 +34,8 @@ The whole app is a set of static files (`public/`). Put them on any static web h
 - The other phones join with the room code or by **scanning the QR code**, and connect **directly** to the host device over WebRTC ([PeerJS](https://peerjs.com/)).
 - The host can be:
   - **the DM's phone/tablet** (*Create room – I'm the DM*), or
-  - **a tablet in the middle of the table** (*Use this device as the table screen*): it shows the turn order and a big QR code; the DM joins from their phone with the **DM key** shown on the tablet.
+  - **a tablet in the middle of the table** (*Host on this device as table display*): it shows the battle board and a QR code; the DM joins from their phone with the **DM key** shown on the tablet.
+- A tablet can also just **join** an existing room as a table display (*Join as table display*).
 
 **Publishing on GitHub Pages:**
 

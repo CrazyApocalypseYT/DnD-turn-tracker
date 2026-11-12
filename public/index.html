@@ -43,14 +43,15 @@
             </label>
           </details>
           <button id="btn-join" class="btn primary wide">Join as player</button>
+          <button id="btn-join-screen" class="btn ghost wide join-screen">📺 Join as table display</button>
         </section>
         <div class="or">or</div>
         <section>
           <h2>Host a game</h2>
           <button id="btn-create" class="btn accent wide">👑 Create room – I'm the DM</button>
           <p class="muted small">You run the enemies from this device.</p>
-          <button id="btn-create-screen" class="btn ghost wide">📺 Use this device as the table screen</button>
-          <p class="muted small">E.g. a tablet in the middle of the table: it shows the turn order and a QR code, the DM joins from their phone with the DM key.</p>
+          <button id="btn-create-screen" class="btn ghost wide">📺 Host on this device as table display</button>
+          <p class="muted small">E.g. a tablet in the middle of the table: a big battle board with the turn order, allies and enemies, and a QR code. The DM joins from their phone with the DM key.</p>
           <p id="host-hint" class="hint small" hidden>📡 No server needed: the device that creates the room <strong>is</strong> the server. Keep the tracker open and the screen on during the session (it stays awake automatically where supported).</p>
         </section>
       </div>
@@ -93,6 +94,45 @@
       </div>
     </section>
 
+    <!-- ===================== TABLE DISPLAY (tablet) ===================== -->
+    <section id="display" class="display" hidden>
+      <div class="d-top">
+        <div id="d-now" class="d-now"></div>
+        <div class="d-next-box">
+          <h3>Up next</h3>
+          <ol id="d-next" class="d-next"></ol>
+        </div>
+      </div>
+
+      <ol id="d-strip" class="d-strip" aria-label="Initiative order"></ol>
+
+      <div class="d-sides">
+        <section class="d-side d-allies">
+          <h2>🛡️ Allies <span id="d-allies-count" class="d-count"></span></h2>
+          <div id="d-allies" class="d-list"></div>
+        </section>
+        <section class="d-side d-enemies">
+          <h2>⚔️ Enemies <span id="d-enemies-count" class="d-count"></span></h2>
+          <div id="d-enemies" class="d-list"></div>
+        </section>
+      </div>
+
+      <div class="d-bottom">
+        <ul id="d-log" class="d-log" aria-label="Latest events"></ul>
+        <div id="d-join" class="d-join">
+          <div id="screen-qr" class="qr"></div>
+          <div>
+            <div class="muted small">Scan to join · room</div>
+            <strong id="screen-code" class="big-code"></strong>
+            <div id="screen-dmkey-box">
+              <button id="btn-reveal-key" class="btn ghost small">Show DM key</button>
+              <code id="screen-dmkey" hidden></code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="layout">
       <!-- initiative -->
       <section class="panel order-panel">
@@ -105,18 +145,6 @@
       </section>
 
       <aside class="side">
-        <!-- table screen: big QR to join -->
-        <section id="screen-panel" class="panel screen-panel" hidden>
-          <h2>📱 Scan to join</h2>
-          <div id="screen-qr" class="qr"></div>
-          <p class="center">Room code <strong id="screen-code" class="big-code"></strong></p>
-          <div id="screen-dmkey-box" class="center">
-            <p class="muted small">The DM joins from their phone with the DM key ("I'm the DM on a new device").</p>
-            <button id="btn-reveal-key" class="btn ghost small">Show DM key</button>
-            <p><code id="screen-dmkey" hidden></code></p>
-          </div>
-        </section>
-
         <!-- player panel -->
         <section id="player-panel" class="panel" hidden>
           <h2>Your party</h2>
@@ -226,9 +254,14 @@
 
       <div class="stats-head">
         <h3>Custom stats</h3>
-        <button type="button" id="btn-add-stat" class="btn ghost small">+ Add stat</button>
       </div>
-      <p class="muted small">Anything you want to track: Spell save DC, Passive Perception, Speed, Ki points…</p>
+      <p class="muted small">Text stats show as chips (Spell DC 15). Give a stat a <strong>Max</strong> and it becomes a <strong>bar</strong> under the HP bar (Mana 12/20). "Refills every turn" fills it back up when the creature's turn starts – handy for movement.</p>
+      <div class="stat-add">
+        <button type="button" id="btn-add-stat" class="btn ghost small">+ Text stat</button>
+        <button type="button" id="btn-add-bar" class="btn ghost small">+ Bar</button>
+        <button type="button" id="btn-add-mana" class="btn ghost small">+ 🔵 Mana</button>
+        <button type="button" id="btn-add-move" class="btn ghost small">+ 🟡 Movement</button>
+      </div>
       <div id="stats" class="stats-edit"></div>
 
       <p id="editor-error" class="error" role="alert"></p>

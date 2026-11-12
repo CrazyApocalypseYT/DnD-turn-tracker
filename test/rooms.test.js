@@ -199,3 +199,59 @@ test('a tablet can host as a table screen; the DM joins with the DM key', () => 
   assert.equal(g.viewFor(room, 'tablet').yourTurn, false);
   assert.deepEqual(g.viewFor(room, 'tablet').members.map((m) => m.role), ['dm', 'screen', 'player']);
 });
+
+test('custom stats with a max become bars; text stats stay text', () => {
+  const room = setup();
+  const [c] = g.saveCombatant(room, 'p1', pc('Aria', 15, {
+    stats: [
+      { key: 'Mana', value: '12', max: '20' },
+      { key: 'Movement', max: 30, refill: true },
+      { key: 'Ki', value: 99, max: 5, color: 'pink' },
+      { key: 'Spell DC', value: '15' },
+      { key: 'Bad color', max: 3, color: '<script>' },
+    ],
+  }));
+  assert.deepEqual(c.stats[0], { key: 'Mana', value: 12, max: 20, color: 'blue', refill: false });
+  assert.deepEqual(c.stats[1], { key: 'Movement', value: 30, max: 30, color: 'yellow', refill: true });
+  assert.equal(c.stats[2].value, 5, 'value is clamped to max');
+  assert.equal(c.stats[2].color, 'pink');
+  assert.deepEqual(c.stats[3], { key: 'Spell DC', value: '15' });
+  assert.ok(g.BAR_COLORS.includes(c.stats[4].color));
+});
+
+test('bars can be adjusted by the owner or DM only, within 0..max', () => {
+  const room = setup();
+  const [c] = g.saveCombatant(room, 'p1', pc('Aria', 15, { stats: [{ key: 'Mana', value: 5, max: 10 }, { key: 'DC', value: '14' }] }));
+  g.adjustStat(room, 'p1', { id: c.id, index: 0, delta: -3 });
+  assert.equal(c.stats[0].value, 2);
+  g.adjustStat(room, 'p1', { id: c.id, index: 0, delta: -50 });
+  assert.equal(c.stats[0].value, 0);
+  g.adjustStat(room, 'dm-secret', { id: c.id, index: 0, value: 7 });
+  assert.equal(c.stats[0].value, 7);
+  assert.throws(() => g.adjustStat(room, 'p2', { id: c.id, index: 0, delta: 1 }), /cannot change/);
+  assert.throws(() => g.adjustStat(room, 'p1', { id: c.id, index: 1, delta: 1 }), /no longer exists/);
+});
+
+test('"refills every turn" bars fill up when that creature\'s turn starts', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', pc('Aria', 15, { stats: [{ key: 'Movement', value: 30, max: 30, refill: true }, { key: 'Mana', value: 10, max: 10 }] }));
+  g.saveCombatant(room, 'p2', pc('Bo', 12));
+  g.startCombat(room, 'dm-secret'); // Aria's turn
+  g.adjustStat(room, 'p1', { id: aria.id, index: 0, delta: -25 });
+  g.adjustStat(room, 'p1', { id: aria.id, index: 1, delta: -4 });
+  g.nextTurn(room, 'p1'); // Bo
+  assert.equal(aria.stats[0].value, 5, 'not refilled on someone else\'s turn');
+  g.nextTurn(room, 'p2'); // Aria again, round 2
+  assert.equal(aria.stats[0].value, 30, 'movement refilled');
+  assert.equal(aria.stats[1].value, 6, 'mana does not refill');
+});
+
+test('a device can join an existing room as a table display, without seeing the DM key', () => {
+  const room = setup();
+  g.joinRoom(room, 'tab', 'Tablet', undefined, { screen: true });
+  assert.equal(room.members.tab.role, 'screen');
+  assert.equal(g.viewFor(room, 'tab').dmKey, undefined, 'only the display that created the room may show the DM key');
+  assert.throws(() => g.saveCombatant(room, 'tab', pc('X', 1)), /only displays/);
+  g.joinRoom(room, 'p1', 'Alice', undefined, { screen: true });
+  assert.equal(room.members.p1.role, 'player', 'existing members keep their role');
+});

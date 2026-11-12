@@ -143,7 +143,7 @@
     async onReconnected() {
       // after a dropped connection, silently re-join the room
       if (!session || session.host) return;
-      const res = await net.request('room:join', { clientId, name: session.name, code: session.code });
+      const res = await net.request('room:join', { clientId, name: session.name, code: session.code, screen: session.screen });
       if (!res.ok) {
         leaveLocal();
         showLobbyError(res.error);
@@ -184,10 +184,10 @@
     return net.create(name, screen);
   }
 
-  async function joinRoom(code, name, dmKey) {
+  async function joinRoom(code, name, dmKey, screen) {
     if (NET_MODE === 'server') {
       net = await getSocketNet();
-      return net.request('room:join', { clientId, name, code, dmKey });
+      return net.request('room:join', { clientId, name, code, dmKey, screen });
     }
     if (net) net.close();
     net = new P2PGuest(callbacks);
@@ -198,7 +198,7 @@
       net = null;
       return { ok: false, error: err.message };
     }
-    const res = await net.request('room:join', { clientId, name, code, dmKey });
+    const res = await net.request('room:join', { clientId, name, code, dmKey, screen });
     if (!res.ok) { net.close(); net = null; }
     return res;
   }
@@ -294,8 +294,8 @@
   $('#btn-create').addEventListener('click', () => create(false));
   $('#btn-create-screen').addEventListener('click', () => create(true));
 
-  async function join() {
-    const name = lobbyName();
+  async function join(screen = false) {
+    const name = lobbyName(screen ? 'Table display' : '');
     if (!name) return;
     const code = $('#lobby-code').value.trim().toUpperCase();
     if (!code) {
@@ -303,15 +303,16 @@
       return $('#lobby-code').focus();
     }
     unlockAudio();
-    const dmKey = $('#lobby-dmkey').value.trim();
-    await withBusy($('#btn-join'), async () => {
-      const res = await joinRoom(code, name, dmKey || undefined);
+    const dmKey = screen ? '' : $('#lobby-dmkey').value.trim();
+    await withBusy(screen ? $('#btn-join-screen') : $('#btn-join'), async () => {
+      const res = await joinRoom(code, name, dmKey || undefined, screen);
       if (!res.ok) return showLobbyError(res.error);
-      enterRoom(res.code, name);
+      enterRoom(res.code, name, { screen });
     });
   }
-  $('#btn-join').addEventListener('click', join);
-  $('#lobby-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+  $('#btn-join').addEventListener('click', () => join(false));
+  $('#btn-join-screen').addEventListener('click', () => join(true));
+  $('#lobby-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(false); });
 
   function leaveLocal() {
     if (net && net !== socketNet) net.close();
@@ -423,7 +424,7 @@
     $('#room-code').textContent = state.code;
     const rb = $('#role-badge');
     const screen = isScreen();
-    rb.textContent = dm ? '👑 Dungeon Master' : screen ? '📺 Table screen' : `Player · ${state.you.name}`;
+    rb.textContent = dm ? '👑 Dungeon Master' : screen ? '📺 Table display' : `Player · ${state.you.name}`;
     rb.className = `badge ${dm ? 'dm' : screen ? 'screen' : 'player'}`;
     $('#host-badge').hidden = !(session && session.host);
     document.body.classList.toggle('screen-mode', screen);
@@ -433,7 +434,7 @@
     renderPlayerPanel();
     renderDamage();
     renderDmPanel();
-    renderScreenPanel();
+    renderDisplay();
     renderMembers();
     renderLog();
 
@@ -489,6 +490,35 @@
     return h('div', { class: 'c-hp' },
       h('div', { class: `hpbar ${hpClass(pct)}`, title: c.status }, h('div', { style: `width:${pct}%` })),
       h('span', { class: 'hptext' }, `❤️ ${text}`));
+  }
+
+  /** Bar stats (mana, movement…) under the HP bar, with −/+ for whoever controls the creature. */
+  function resourceBars(c, { controls = true } = {}) {
+    const bars = c.stats.map((s, i) => [s, i]).filter(([s]) => typeof s.max === 'number');
+    if (!bars.length) return null;
+    const canEdit = controls && c.mine;
+    return h('div', { class: 'c-bars' }, bars.map(([s, i]) => {
+      const pct = Math.round((s.value / s.max) * 100);
+      const set = async () => {
+        const v = prompt(`${s.key} for ${c.name} (0–${s.max}):`, String(s.value));
+        if (v === null || v.trim() === '') return;
+        act('stat:adjust', { id: c.id, index: i, value: v });
+      };
+      return h('div', { class: `res res-${s.color}` },
+        h('span', { class: 'res-name' }, s.refill ? `${s.key} 🔁` : s.key),
+        h('div', { class: 'resbar', title: s.refill ? 'Refills at the start of each turn' : '' }, h('div', { style: `width:${pct}%` })),
+        canEdit
+          ? h('button', { class: 'res-val linkish', title: 'Set value', onclick: set }, `${s.value}/${s.max}`)
+          : h('span', { class: 'res-val' }, `${s.value}/${s.max}`),
+        canEdit && h('span', { class: 'res-btns' },
+          h('button', { class: 'btn ghost tiny', 'aria-label': `${s.key} minus 1`, onclick: () => act('stat:adjust', { id: c.id, index: i, delta: -1 }) }, '−'),
+          h('button', { class: 'btn ghost tiny', 'aria-label': `${s.key} plus 1`, onclick: () => act('stat:adjust', { id: c.id, index: i, delta: 1 }) }, '+')));
+    }));
+  }
+
+  function textStats(c) {
+    const chips = c.stats.filter((s) => typeof s.max !== 'number');
+    return chips.length ? h('div', { class: 'c-stats' }, chips.map((s) => h('span', { class: 'chip' }, h('b', {}, s.key), s.value))) : null;
   }
 
   function quickHp(c, { allowDamage, allowHeal }) {
@@ -563,7 +593,8 @@
           sub.length ? h('div', { class: 'c-sub' }, sub.join(' · ')) : null),
         h('div', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC')),
         hpRow(c),
-        c.stats.length ? h('div', { class: 'c-stats' }, c.stats.map((s) => h('span', { class: 'chip' }, h('b', {}, s.key), s.value))) : null,
+        resourceBars(c),
+        textStats(c),
         actions.length ? h('div', { class: 'c-actions' }, actions) : null);
       list.append(card);
     }
@@ -658,11 +689,119 @@
     $('#dm-key').textContent = state.dmKey || '';
   }
 
+  /* ------------------------------------------------------------ */
+  /* table display (tablet battle board)                           */
+  /* ------------------------------------------------------------ */
+  const isAlly = (c) => c.type !== 'enemy';
+  const actsInRound = (c) => !c.hidden && !(c.type === 'enemy' && c.defeated);
+
+  function sideLabel(c) {
+    if (c.type === 'pc') return `Player · ${c.ownerName}`;
+    if (c.type === 'companion') return `Friendly NPC · ${c.ownerName}`;
+    return 'Enemy';
+  }
+
+  /** The creatures that act after the current one, wrapping into the next round. */
+  function upNext(count) {
+    const order = state.combatants.filter(actsInRound);
+    if (!state.combat.active || order.length < 2) return [];
+    const i = order.findIndex((c) => c.id === state.combat.turnId);
+    const out = [];
+    for (let k = 1; k <= Math.min(count, order.length - 1); k++) out.push(order[(Math.max(i, 0) + k) % order.length]);
+    return out;
+  }
+
+  function dHp(c) {
+    const pct = Math.max(0, Math.min(100, c.hpPct));
+    return h('div', { class: 'c-hp' },
+      h('div', { class: `hpbar ${hpClass(pct)}` }, h('div', { style: `width:${pct}%` })),
+      h('span', { class: 'hptext' }, c.hp === null ? c.status : `${c.hp} / ${c.hpMax}`));
+  }
+
+  function dCard(c, tag) {
+    return h('div', {
+      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
+    },
+      h('div', { class: 'd-card-head' },
+        h('span', { class: 'init' }, String(c.initiative)),
+        h('div', { class: 'd-card-title' },
+          h('div', { class: 'c-name' }, c.name),
+          h('div', { class: 'c-sub' }, [sideLabel(c), c.cls, c.level && c.type !== 'enemy' ? `Lv ${c.level}` : ''].filter(Boolean).join(' · '))),
+        tag === 'now' && h('span', { class: 'd-tag now' }, 'NOW'),
+        tag === 'next' && h('span', { class: 'd-tag next' }, 'NEXT'),
+        c.defeated && h('span', { class: 'd-tag' }, c.type === 'enemy' ? '💀' : '0 HP'),
+        h('span', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC'))),
+      dHp(c),
+      resourceBars(c, { controls: false }));
+  }
+
+  let lastDisplaySeq = null;
   let screenQrFor = null;
-  function renderScreenPanel() {
+  function renderDisplay() {
     const screen = isScreen();
-    $('#screen-panel').hidden = !screen;
+    $('#display').hidden = !screen;
+    $('#turn-banner').hidden = screen;
+    document.querySelector('.layout').hidden = screen;
     if (!screen) return;
+
+    const { combat } = state;
+    const cur = combat.turnId ? byId(combat.turnId) : null;
+    const next = upNext(3);
+    const nextId = next[0] && next[0].id;
+    $('#display').classList.toggle('idle', !combat.active);
+
+    // NOW
+    const now = $('#d-now');
+    now.className = `d-now ${cur ? (isAlly(cur) ? 'ally' : 'enemy') : ''}`;
+    if (cur) {
+      now.replaceChildren(
+        h('div', { class: 'd-round' }, `Round ${combat.round}`),
+        h('div', { class: 'd-now-side' }, isAlly(cur) ? '🛡️ Ally’s turn' : '⚔️ Enemy’s turn'),
+        h('div', { class: 'd-now-name' }, cur.name),
+        h('div', { class: 'd-now-sub' }, [sideLabel(cur), cur.cls].filter(Boolean).join(' · ')),
+        dHp(cur),
+        resourceBars(cur, { controls: false }));
+      if (combat.seq !== lastDisplaySeq) {
+        lastDisplaySeq = combat.seq;
+        now.classList.remove('pop');
+        void now.offsetWidth;
+        now.classList.add('pop');
+      }
+    } else {
+      now.replaceChildren(
+        h('div', { class: 'd-round' }, combat.active ? `Round ${combat.round}` : 'Out of combat'),
+        h('div', { class: 'd-now-name' }, combat.active ? 'No one can act' : 'Waiting for the DM to start combat…'),
+        h('div', { class: 'd-now-sub' }, 'Scan the QR code below to join from your phone.'));
+    }
+
+    // up next
+    $('#d-next').replaceChildren(...(next.length ? next : []).map((c, i) => h('li', { class: isAlly(c) ? 'ally' : 'enemy' },
+      h('span', { class: 'd-next-n' }, String(i + 1)),
+      h('span', { class: 'd-next-name' }, c.name),
+      h('span', { class: 'd-next-side' }, isAlly(c) ? '🛡️' : '⚔️'))));
+    $('#d-next').closest('.d-next-box').hidden = next.length === 0;
+
+    // initiative strip
+    const strip = $('#d-strip');
+    strip.replaceChildren(...state.combatants.map((c) => h('li', {
+      class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
+    }, h('b', {}, String(c.initiative)), c.name)));
+    const curChip = strip.querySelector('.is-now');
+    if (curChip) curChip.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+
+    // allies / enemies
+    const tagOf = (c) => (c.id === combat.turnId ? 'now' : c.id === nextId ? 'next' : null);
+    const allies = state.combatants.filter(isAlly);
+    const enemies = state.combatants.filter((c) => !isAlly(c));
+    $('#d-allies').replaceChildren(...(allies.length ? allies.map((c) => dCard(c, tagOf(c))) : [h('p', { class: 'muted' }, 'No allies yet.')]));
+    $('#d-enemies').replaceChildren(...(enemies.length ? enemies.map((c) => dCard(c, tagOf(c))) : [h('p', { class: 'muted' }, 'No enemies… yet.')]));
+    $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated).length} standing` : '';
+    $('#d-enemies-count').textContent = enemies.length ? `${enemies.filter((c) => !c.defeated).length} left` : '';
+
+    // latest events
+    $('#d-log').replaceChildren(...state.log.slice(-3).reverse().map((l) => h('li', {}, l.text)));
+
+    // join block
     const link = inviteLink();
     if (screenQrFor !== link) {
       screenQrFor = link;
@@ -670,7 +809,7 @@
     }
     $('#screen-code').textContent = state.code;
     const hasDm = state.members.some((m) => m.role === 'dm');
-    $('#screen-dmkey-box').hidden = hasDm;
+    $('#screen-dmkey-box').hidden = hasDm || !state.dmKey;
     $('#screen-dmkey').textContent = state.dmKey || '';
   }
   $('#btn-reveal-key').addEventListener('click', () => {
@@ -704,19 +843,42 @@
   const form = $('#editor-form');
   let editing = null; // { type, id }
 
-  function statRow(key = '', value = '') {
+  const COLOR_LABELS = { blue: '🔵 Blue', purple: '🟣 Purple', yellow: '🟡 Yellow', orange: '🟠 Orange', teal: '🟢 Teal', pink: '🩷 Pink', gray: '⚪ Gray' };
+
+  /** One custom stat in the editor. Filling in "Max" turns it into a bar. */
+  function statRow(stat = {}) {
+    const bar = typeof stat.max === 'number' || stat.bar;
+    const color = h('select', { 'data-color': '', 'aria-label': 'Bar color' },
+      h('option', { value: '' }, 'Auto color'),
+      Object.entries(COLOR_LABELS).map(([v, label]) => h('option', { value: v, selected: stat.color === v }, label)));
+    const refill = h('input', { type: 'checkbox', 'data-refill': '', checked: Boolean(stat.refill) });
+    const maxInput = h('input', {
+      type: 'number', inputmode: 'numeric', min: '1', max: '9999', placeholder: 'Max', 'aria-label': 'Max (makes it a bar)',
+      value: stat.max ?? '', 'data-max': '',
+    });
+    const opts = h('div', { class: 'bar-opts' }, color, h('label', { class: 'toggle small' }, refill, h('span', {}, 'Refills every turn')));
+    const sync = () => { opts.hidden = maxInput.value === ''; row.classList.toggle('is-bar', maxInput.value !== ''); };
+    maxInput.addEventListener('input', sync);
     const row = h('div', { class: 'stat-row' },
-      h('input', { placeholder: 'Stat (e.g. Spell DC)', maxlength: '24', value: key, 'data-k': '' }),
-      h('input', { placeholder: 'Value (e.g. 15)', maxlength: '60', value, 'data-v': '' }),
-      h('button', { type: 'button', class: 'btn ghost small', title: 'Remove stat', onclick: () => row.remove() }, '✕'));
+      h('div', { class: 'stat-main' },
+        h('input', { placeholder: bar ? 'Name (e.g. Mana)' : 'Name (e.g. Spell DC)', maxlength: '24', value: stat.key ?? '', 'data-k': '' }),
+        h('input', { placeholder: bar ? 'Current' : 'Value', maxlength: '60', value: stat.value ?? '', 'data-v': '' }),
+        maxInput,
+        h('button', { type: 'button', class: 'btn ghost small', title: 'Remove stat', onclick: () => row.remove() }, '✕')),
+      opts);
+    sync();
     return row;
   }
 
-  $('#btn-add-stat').addEventListener('click', () => {
-    const row = statRow();
+  function addStat(stat) {
+    const row = statRow(stat);
     $('#stats').append(row);
     row.querySelector('input').focus();
-  });
+  }
+  $('#btn-add-stat').addEventListener('click', () => addStat({}));
+  $('#btn-add-bar').addEventListener('click', () => addStat({ bar: true }));
+  $('#btn-add-mana').addEventListener('click', () => addStat({ key: 'Mana', max: 10, value: 10, color: 'blue' }));
+  $('#btn-add-move').addEventListener('click', () => addStat({ key: 'Movement', max: 30, value: 30, color: 'yellow', refill: true }));
 
   $('#btn-roll').addEventListener('click', () => {
     const bonus = Number(form.elements.initBonus.value) || 0;
@@ -757,7 +919,7 @@
       f.name.value = type === 'pc' ? (state ? state.you.name : '') : '';
       f.hp.value = '';
     }
-    $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s.key, s.value)));
+    $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s)));
     $('#btn-delete').hidden = !c;
     dlg.showModal();
     f.name.focus(); // no delayed focus: it could steal typing from another field
@@ -780,6 +942,9 @@
     const stats = [...$('#stats').querySelectorAll('.stat-row')].map((r) => ({
       key: r.querySelector('[data-k]').value,
       value: r.querySelector('[data-v]').value,
+      max: r.querySelector('[data-max]').value,
+      color: r.querySelector('[data-color]').value || undefined,
+      refill: r.querySelector('[data-refill]').checked,
     }));
     const combatant = {
       id: editing.id || undefined,
