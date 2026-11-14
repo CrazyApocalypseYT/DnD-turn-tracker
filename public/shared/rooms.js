@@ -32,14 +32,18 @@ function randomBytes(n) {
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 const CODE_LENGTH = 5;
 
+/** "Practically unlimited" cap for numbers (HP, level, AC, bar max…). */
+const BIG = 1000000;
+
 const LIMITS = {
   name: 40,
   cls: 40,
-  statKey: 24,
-  statValue: 60,
-  stats: 12,
-  combatants: 150,
-  enemyBatch: 20,
+  statKey: 40,
+  statValue: 200,
+  stats: 100,
+  conditions: 24,
+  combatants: 300,
+  enemyBatch: 50,
   log: 60,
   members: 30,
 };
@@ -83,7 +87,7 @@ function int(value, min, max, fallback) {
 function initiativeValue(value, fallback = 0) {
   const n = Number.parseFloat(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.round(Math.min(99, Math.max(-20, n)) * 100) / 100;
+  return Math.round(Math.min(9999, Math.max(-999, n)) * 100) / 100;
 }
 
 const BAR_COLORS = ['blue', 'purple', 'yellow', 'orange', 'teal', 'pink', 'gray'];
@@ -114,7 +118,7 @@ function cleanStats(stats) {
     if (!s || typeof s !== 'object') continue;
     const key = str(s.key, LIMITS.statKey);
     if (!isBlank(s.max)) {
-      const max = int(s.max, 1, 9999, 0);
+      const max = int(s.max, 1, BIG, 0);
       if (max > 0) {
         const value = isBlank(s.value) ? max : int(s.value, 0, max, max);
         const color = BAR_COLORS.includes(s.color) ? s.color : defaultBarColor(key);
@@ -132,6 +136,84 @@ function cleanStats(stats) {
 }
 
 const isBar = (s) => typeof s.max === 'number';
+
+/* ------------------------------------------------------------------ */
+/* Conditions: buffs & debuffs                                         */
+/* ------------------------------------------------------------------ */
+
+/** Colors a condition can paint a bar with. */
+const TINTS = ['green', 'red', 'orange', 'yellow', 'blue', 'cyan', 'purple', 'pink', 'gray'];
+const CONDITION_KINDS = ['buff', 'debuff', 'neutral'];
+/** Which bar a condition recolors: hp, magic bars, movement bars, all bars, or one named bar ("stat:Ki"). */
+const BAR_TARGETS = ['hp', 'mana', 'move', 'all'];
+
+/**
+ * Ready-made conditions. `official` = the conditions from the D&D 5e rules
+ * (SRD); the rest are common spell/class effects. Durations are in rounds.
+ */
+const CONDITION_PRESETS = [
+  { key: 'blinded', name: 'Blinded', emoji: '🙈', kind: 'debuff', official: true },
+  { key: 'charmed', name: 'Charmed', emoji: '💖', kind: 'debuff', official: true },
+  { key: 'deafened', name: 'Deafened', emoji: '🙉', kind: 'debuff', official: true },
+  { key: 'exhaustion', name: 'Exhaustion', emoji: '🥱', kind: 'debuff', official: true, levels: 6 },
+  { key: 'frightened', name: 'Frightened', emoji: '😱', kind: 'debuff', official: true },
+  { key: 'grappled', name: 'Grappled', emoji: '🤼', kind: 'debuff', official: true, color: 'gray', bar: 'move' },
+  { key: 'incapacitated', name: 'Incapacitated', emoji: '💫', kind: 'debuff', official: true },
+  { key: 'invisible', name: 'Invisible', emoji: '👻', kind: 'buff', official: true },
+  { key: 'paralyzed', name: 'Paralyzed', emoji: '⚡', kind: 'debuff', official: true, color: 'yellow', bar: 'move' },
+  { key: 'petrified', name: 'Petrified', emoji: '🗿', kind: 'debuff', official: true, color: 'gray', bar: 'all' },
+  { key: 'poisoned', name: 'Poisoned', emoji: '🤢', kind: 'debuff', official: true, color: 'purple', bar: 'hp' },
+  { key: 'prone', name: 'Prone', emoji: '🛌', kind: 'debuff', official: true },
+  { key: 'restrained', name: 'Restrained', emoji: '⛓️', kind: 'debuff', official: true, color: 'gray', bar: 'move' },
+  { key: 'stunned', name: 'Stunned', emoji: '😵', kind: 'debuff', official: true },
+  { key: 'unconscious', name: 'Unconscious', emoji: '💤', kind: 'debuff', official: true, color: 'gray', bar: 'hp' },
+  { key: 'blessed', name: 'Blessed', emoji: '✨', kind: 'buff', color: 'yellow', bar: 'hp', rounds: 10 },
+  { key: 'hasted', name: 'Hasted', emoji: '🏃', kind: 'buff', color: 'cyan', bar: 'move', rounds: 10 },
+  { key: 'raging', name: 'Raging', emoji: '😡', kind: 'buff', color: 'orange', bar: 'hp', rounds: 10 },
+  { key: 'concentrating', name: 'Concentrating', emoji: '🧠', kind: 'neutral', color: 'blue', bar: 'mana' },
+  { key: 'inspired', name: 'Inspired', emoji: '🎵', kind: 'buff' },
+  { key: 'dodging', name: 'Dodging', emoji: '🛡️', kind: 'buff', rounds: 1 },
+  { key: 'hidden', name: 'Hidden', emoji: '🥷', kind: 'buff' },
+  { key: 'regenerating', name: 'Regenerating', emoji: '💚', kind: 'buff', color: 'cyan', bar: 'hp' },
+  { key: 'slowed', name: 'Slowed', emoji: '🐌', kind: 'debuff', color: 'gray', bar: 'move', rounds: 10 },
+  { key: 'burning', name: 'Burning', emoji: '🔥', kind: 'debuff', color: 'orange', bar: 'hp' },
+  { key: 'bleeding', name: 'Bleeding', emoji: '🩸', kind: 'debuff', color: 'red', bar: 'hp' },
+  { key: 'cursed', name: 'Cursed', emoji: '🧿', kind: 'debuff', color: 'pink', bar: 'all' },
+];
+
+function cleanBarTarget(bar) {
+  const b = String(bar ?? '');
+  if (BAR_TARGETS.includes(b)) return b;
+  if (b.startsWith('stat:')) {
+    const k = str(b.slice(5), LIMITS.statKey);
+    return k ? `stat:${k}` : '';
+  }
+  return '';
+}
+
+/** Build a clean condition from a preset key or custom fields. */
+function cleanCondition(input, isDm) {
+  if (!input || typeof input !== 'object') throw new GameError('Invalid condition.');
+  const preset = input.preset ? CONDITION_PRESETS.find((p) => p.key === input.preset) : null;
+  if (input.preset && !preset) throw new GameError('Unknown condition.');
+  const src = preset ? { ...preset, rounds: isBlank(input.rounds) ? preset.rounds : input.rounds } : input;
+  const name = str(src.name, 24);
+  if (!name) throw new GameError('Give the condition a name.');
+  const kind = CONDITION_KINDS.includes(src.kind) ? src.kind : 'neutral';
+  const emoji = str(src.emoji, 16) || (kind === 'buff' ? '⬆️' : kind === 'debuff' ? '⬇️' : '🔹');
+  const color = TINTS.includes(src.color) ? src.color : '';
+  return {
+    key: preset ? preset.key : null,
+    name,
+    emoji,
+    kind,
+    color,
+    bar: color ? cleanBarTarget(src.bar) : '',
+    rounds: isBlank(src.rounds) ? null : int(src.rounds, 1, 9999, null),
+    level: preset && preset.levels ? int(input.level, 1, preset.levels, 1) : null,
+    secret: Boolean(isDm && input.secret),
+  };
+}
 
 function cleanName(name) {
   const n = str(name, 30);
@@ -256,20 +338,20 @@ function canControl(room, member, c) {
 }
 
 function buildFields(input, existing) {
-  const hpMax = int(input.hpMax, 1, 9999, existing ? existing.hpMax : 10);
-  let hp = int(input.hp, 0, 9999, existing ? existing.hp : hpMax);
+  const hpMax = int(input.hpMax, 1, BIG, existing ? existing.hpMax : 10);
+  let hp = int(input.hp, 0, BIG, existing ? existing.hp : hpMax);
   // keep current HP sensible when only max HP changes
   if (input.hp === undefined || input.hp === null || input.hp === '') hp = existing ? Math.min(existing.hp, hpMax) : hpMax;
   hp = Math.min(hp, hpMax);
   return {
     name: str(input.name, LIMITS.name),
     cls: str(input.cls, LIMITS.cls),
-    level: int(input.level, 0, 30, existing ? existing.level : 1),
+    level: int(input.level, 0, BIG, existing ? existing.level : 1),
     hpMax,
     hp,
-    ac: int(input.ac, 0, 50, existing ? existing.ac : 10),
+    ac: int(input.ac, 0, BIG, existing ? existing.ac : 10),
     initiative: initiativeValue(input.initiative, existing ? existing.initiative : 0),
-    initBonus: int(input.initBonus, -10, 20, existing ? existing.initBonus || 0 : 0),
+    initBonus: int(input.initBonus, -999, 9999, existing ? existing.initBonus || 0 : 0),
     stats: cleanStats(input.stats),
   };
 }
@@ -289,12 +371,16 @@ function saveCombatant(room, clientId, input) {
     if (!f.name) throw new GameError('Name is required.');
     const before = c.hp;
     Object.assign(c, f);
+    if (c.type === 'enemy') applyEnemyExtras(room, c, input);
     if (c.type === 'enemy' && input.hidden !== undefined) {
       const wasHidden = c.hidden;
       c.hidden = Boolean(input.hidden);
       if (wasHidden && !c.hidden) addLog(room, `${c.name} joined the fight!`);
     }
-    if (before > 0 && c.hp === 0 && c.type === 'enemy') addLog(room, `${c.name} is defeated!`);
+    if (before > 0 && c.hp === 0 && c.type === 'enemy') {
+      addLog(room, `💀 ${c.name} is defeated!`);
+      onDefeated(room, c);
+    }
     touch(room);
     return [c];
   }
@@ -320,11 +406,17 @@ function saveCombatant(room, clientId, input) {
         ...f,
         stats: f.stats.map((s) => ({ ...s })),
         name: count > 1 ? `${f.name} ${i + 1}`.slice(0, LIMITS.name + 3) : f.name,
+        conditions: [],
       };
+      applyEnemyExtras(room, c, input);
       room.combatants.push(c);
       created.push(c);
     }
-    const label = count > 1 ? `${count}× ${f.name}` : f.name;
+    const first = created[0];
+    let label = count > 1 ? `${count}× ${f.name}` : f.name;
+    if (first.lair) label = `🏰 ${label}`;
+    else if (first.boss) label = `👑 ${label} (boss)`;
+    if (first.leader) label += `, summoned by ${findCombatant(room, first.leader).name},`;
     // hidden creatures are only announced to the DM
     if (input.hidden) addLog(room, '', `The DM prepared ${label} (hidden).`);
     else addLog(room, `${label} joined the fight!`);
@@ -340,11 +432,87 @@ function saveCombatant(room, clientId, input) {
     throw new GameError(type === 'pc' ? 'You already have a character. Edit it instead.' : 'Each player can only have one friendly NPC.');
   }
   if (room.combatants.length >= LIMITS.combatants) throw new GameError('Too many creatures in this room.');
-  const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f };
+  const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f, conditions: [] };
   room.combatants.push(c);
   addLog(room, type === 'pc' ? `${member.name} added the character ${c.name}.` : `${member.name} brought along ${c.name} (friendly NPC).`);
   touch(room);
   return [c];
+}
+
+const LEADER_DEATH_RULES = ['dies', 'flees', 'stays'];
+
+/** true if `ancestorId` is `startId` or one of its leaders (prevents loops). */
+function isInLeaderChain(room, ancestorId, startId) {
+  let cur = startId;
+  for (let i = 0; cur && i < 50; i++) {
+    if (cur === ancestorId) return true;
+    const x = room.combatants.find((c) => c.id === cur);
+    cur = x ? x.leader : null;
+  }
+  return false;
+}
+
+/**
+ * Boss / summon / lair settings for enemies (only the DM can save enemies).
+ *  - boss: shown in the boss bar at the top of every screen
+ *  - leader: the enemy that summoned/commands this one
+ *  - onLeaderDeath: what happens when the leader falls (dies | flees | stays)
+ *  - followLeader: acts right after its leader in the turn order
+ *  - lair: a "Lair actions" turn (initiative 20, loses ties, no HP)
+ */
+function applyEnemyExtras(room, c, input) {
+  if (input.boss !== undefined) c.boss = Boolean(input.boss);
+  if (input.lair !== undefined) c.lair = Boolean(input.lair);
+  if (input.leader !== undefined) {
+    const lid = input.leader ? String(input.leader) : null;
+    if (lid) {
+      const leader = room.combatants.find((x) => x.id === lid && x.type === 'enemy');
+      if (!leader) throw new GameError('The leader no longer exists.');
+      if (leader.lair) throw new GameError('Lair actions cannot have summons.');
+      if (isInLeaderChain(room, c.id, lid)) throw new GameError('A creature cannot be summoned by itself or its own summons.');
+      c.leader = lid;
+    } else {
+      c.leader = null;
+    }
+  }
+  if (input.onLeaderDeath !== undefined) c.onLeaderDeath = LEADER_DEATH_RULES.includes(input.onLeaderDeath) ? input.onLeaderDeath : 'dies';
+  if (input.followLeader !== undefined) c.followLeader = Boolean(input.followLeader);
+  if (!c.leader) c.followLeader = false;
+  if (c.lair) {
+    c.hpMax = 1;
+    c.hp = 1;
+    c.boss = false;
+    c.leader = null;
+    c.followLeader = false;
+  }
+}
+
+/**
+ * An enemy just dropped to 0 HP: its summons die with it, flee, or keep
+ * fighting, depending on each summon's rule (and so on down the chain).
+ */
+function onDefeated(room, fallen, seen = new Set()) {
+  if (seen.has(fallen.id)) return;
+  seen.add(fallen.id);
+  for (const m of room.combatants.filter((x) => x.leader === fallen.id)) {
+    const rule = m.onLeaderDeath || 'dies';
+    if (rule === 'stays') continue;
+    const say = (text) => (m.hidden ? addLog(room, '', text) : addLog(room, text));
+    if (rule === 'flees') {
+      onDefeated(room, m, seen);
+      room.combatants = room.combatants.filter((x) => x.id !== m.id);
+      say(`🏃 ${m.name} flees as ${fallen.name} falls!`);
+    } else if (m.hp > 0) {
+      m.hp = 0;
+      say(`💀 ${m.name} perishes with ${fallen.name}!`);
+      onDefeated(room, m, seen);
+    }
+  }
+  // if the creature whose turn it was fled, pass the turn on
+  if (room.combat.active && room.combat.turnId && !room.combatants.some((x) => x.id === room.combat.turnId)) {
+    room.combat.turnId = null;
+    advance(room, +1);
+  }
 }
 
 function removeCombatant(room, clientId, id) {
@@ -353,6 +521,9 @@ function removeCombatant(room, clientId, id) {
   if (!canControl(room, member, c)) throw new GameError('You cannot remove this creature.');
   const wasCurrent = room.combat.active && room.combat.turnId === c.id;
   room.combatants = room.combatants.filter((x) => x.id !== id);
+  for (const x of room.combatants) {
+    if (x.leader === id) { x.leader = null; x.followLeader = false; }
+  }
   if (!c.hidden) addLog(room, `${c.name} left the fight.`);
   if (wasCurrent) {
     room.combat.turnId = null;
@@ -369,11 +540,12 @@ function removeCombatant(room, clientId, id) {
 function changeHp(room, clientId, { targetId, amount, mode, attackerId } = {}) {
   const member = getMember(room, clientId);
   const target = findCombatant(room, targetId);
-  const value = int(amount, 0, 9999, 0);
+  const value = int(amount, 0, BIG, 0);
   if (value <= 0) throw new GameError('Enter an amount greater than 0.');
   if (mode !== 'damage' && mode !== 'heal') throw new GameError('Invalid action.');
   if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
 
+  if (target.lair) throw new GameError('Lair actions have no HP.');
   const isDm = member.role === 'dm';
   if (!isDm) {
     if (target.hidden) throw new GameError('That creature no longer exists.');
@@ -402,6 +574,7 @@ function changeHp(room, clientId, { targetId, amount, mode, attackerId } = {}) {
     addLog(room, secret ? `${base}.` : `${base}${nums}.`, `${base}${nums}.`);
     if (before > 0 && after === 0) {
       addLog(room, target.type === 'enemy' ? `💀 ${target.name} is defeated!` : `⚠️ ${target.name} drops to 0 HP!`);
+      if (target.type === 'enemy') onDefeated(room, target);
     }
   } else {
     const base = `${who} healed ${target.name} for ${value}`;
@@ -415,8 +588,20 @@ function changeHp(room, clientId, { targetId, amount, mode, attackerId } = {}) {
 /* Turn order                                                          */
 /* ------------------------------------------------------------------ */
 
-function sortKey(c) {
-  return [c.initiative, c.order];
+/**
+ * Turn-order key: [initiative, tie-breaker]. Summons that "act right after
+ * their leader" use the leader's key plus a tiny offset; lair actions lose
+ * initiative ties (as in the 5e rules).
+ */
+function sortKey(room, c, depth = 0) {
+  if (c.followLeader && c.leader && depth < 10) {
+    const leader = room.combatants.find((x) => x.id === c.leader);
+    if (leader) {
+      const k = sortKey(room, leader, depth + 1);
+      return [k[0], k[1] + (0.5 + c.order / 1e7) / (depth + 1)];
+    }
+  }
+  return [c.initiative, c.lair ? c.order + 1e9 : c.order];
 }
 
 /** negative if a acts before b */
@@ -426,7 +611,7 @@ function compareKeys(a, b) {
 }
 
 function sortedCombatants(room) {
-  return [...room.combatants].sort((a, b) => compareKeys(sortKey(a), sortKey(b)));
+  return [...room.combatants].sort((a, b) => compareKeys(sortKey(room, a), sortKey(room, b)));
 }
 
 /** Creatures that actually get a turn: visible, and enemies must be alive. */
@@ -436,7 +621,7 @@ function eligible(room) {
 
 function setCurrent(room, c, { refill = true } = {}) {
   room.combat.turnId = c.id;
-  room.combat.cursor = sortKey(c);
+  room.combat.cursor = sortKey(room, c);
   room.combat.seq += 1;
   // bars marked "refills every turn" (e.g. movement) fill up when the turn starts
   if (refill) for (const s of c.stats || []) if (isBar(s) && s.refill) s.value = s.max;
@@ -459,14 +644,14 @@ function advance(room, dir) {
   if (!cursor) {
     next = list[0];
   } else if (dir > 0) {
-    next = list.find((c) => compareKeys(sortKey(c), cursor) > 0) || null;
+    next = list.find((c) => compareKeys(sortKey(room, c), cursor) > 0) || null;
     if (!next) {
       next = list[0];
       room.combat.round += 1;
       addLog(room, `— Round ${room.combat.round} —`);
     }
   } else {
-    const before = list.filter((c) => compareKeys(sortKey(c), cursor) < 0);
+    const before = list.filter((c) => compareKeys(sortKey(room, c), cursor) < 0);
     next = before[before.length - 1] || null;
     if (!next) {
       next = list[list.length - 1];
@@ -514,6 +699,7 @@ function nextTurn(room, clientId) {
   if (member.role !== 'dm' && !(current && canControl(room, member, current))) {
     throw new GameError("It's not your turn.");
   }
+  if (current) endOfTurn(room, current);
   advance(room, +1);
   touch(room);
 }
@@ -536,6 +722,102 @@ function setTurn(room, clientId, id) {
   touch(room);
 }
 
+/** Conditions with a duration lose a round when their creature's turn ends. */
+function endOfTurn(room, c) {
+  if (!c.conditions || !c.conditions.length) return;
+  c.conditions = c.conditions.filter((k) => {
+    if (k.rounds == null) return true;
+    k.rounds -= 1;
+    if (k.rounds > 0) return true;
+    const text = `${k.emoji} ${k.name} wore off ${c.name}.`;
+    if (k.secret || c.hidden) addLog(room, '', text);
+    else addLog(room, text);
+    return false;
+  });
+}
+
+function conditionLabel(k) {
+  return `${k.emoji} ${k.name}${k.level ? ` ${k.level}` : ''}`;
+}
+
+/**
+ * Add a condition. DM: to anyone. Players: to any creature they can see
+ * (their spells hit enemies and buff allies). Re-adding a condition that is
+ * already there refreshes its duration; Exhaustion goes up one level.
+ */
+function addCondition(room, clientId, { id, condition } = {}) {
+  const member = getMember(room, clientId);
+  if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
+  const c = findCombatant(room, id);
+  const isDm = member.role === 'dm';
+  if (!isDm && c.hidden) throw new GameError('That creature no longer exists.');
+  const k = cleanCondition(condition, isDm);
+  if (!c.conditions) c.conditions = [];
+  const say = (text) => (k.secret || c.hidden ? addLog(room, '', text) : addLog(room, text));
+
+  const existing = k.key ? c.conditions.find((x) => x.key === k.key) : c.conditions.find((x) => x.name.toLowerCase() === k.name.toLowerCase());
+  if (existing) {
+    const preset = CONDITION_PRESETS.find((p) => p.key === existing.key);
+    if (preset && preset.levels) {
+      existing.level = Math.min(preset.levels, (existing.level || 1) + 1);
+      say(`${conditionLabel(existing)}: ${c.name} (by ${member.name}).`);
+    } else {
+      existing.rounds = k.rounds;
+      say(`${conditionLabel(existing)} renewed on ${c.name}${k.rounds ? ` (${k.rounds} rounds)` : ''}.`);
+    }
+    touch(room);
+    return existing;
+  }
+  if (c.conditions.length >= LIMITS.conditions) throw new GameError('Too many conditions on this creature.');
+  const added = { id: randomId(4), ...k, by: member.id };
+  c.conditions.push(added);
+  say(`${conditionLabel(added)}: ${c.name}${k.rounds ? ` for ${k.rounds} round${k.rounds > 1 ? 's' : ''}` : ''} (by ${member.name}).`);
+  touch(room);
+  return added;
+}
+
+function findCondition(c, condId) {
+  const k = (c.conditions || []).find((x) => x.id === condId);
+  if (!k) throw new GameError('That condition is already gone.');
+  return k;
+}
+
+/** DM: any. Players: conditions they added, or any on their own creatures. */
+function canRemoveCondition(member, c, k) {
+  if (member.role === 'dm') return true;
+  if (k.secret) return false;
+  return k.by === member.id || (c.type !== 'enemy' && c.owner === member.id);
+}
+
+function removeCondition(room, clientId, { id, condId } = {}) {
+  const member = getMember(room, clientId);
+  const c = findCombatant(room, id);
+  const k = findCondition(c, condId);
+  if (!canRemoveCondition(member, c, k)) throw new GameError('Only the DM or whoever added it can remove this condition.');
+  c.conditions = c.conditions.filter((x) => x.id !== condId);
+  const text = `${c.name} is no longer ${k.name}${k.level ? ` ${k.level}` : ''}.`;
+  if (k.secret || c.hidden) addLog(room, '', text);
+  else addLog(room, text);
+  touch(room);
+}
+
+/** Change a level-based condition (Exhaustion 1–6); reaching 0 removes it. */
+function conditionLevel(room, clientId, { id, condId, delta } = {}) {
+  const member = getMember(room, clientId);
+  const c = findCombatant(room, id);
+  const k = findCondition(c, condId);
+  const preset = CONDITION_PRESETS.find((p) => p.key === k.key);
+  if (!preset || !preset.levels) throw new GameError('This condition has no levels.');
+  const d = int(delta, -1, 1, 0);
+  if (d > 0) return addCondition(room, clientId, { id, condition: { preset: k.key } });
+  if (!canRemoveCondition(member, c, k)) throw new GameError('Only the DM or whoever added it can change this condition.');
+  if ((k.level || 1) <= 1) return removeCondition(room, clientId, { id, condId });
+  k.level -= 1;
+  addLog(room, `${conditionLabel(k)}: ${c.name}.`);
+  touch(room);
+  return k;
+}
+
 /** Change a bar stat by `delta`, or set it to `value`. Owner or DM. */
 function adjustStat(room, clientId, { id, index, delta, value } = {}) {
   const member = getMember(room, clientId);
@@ -543,7 +825,7 @@ function adjustStat(room, clientId, { id, index, delta, value } = {}) {
   if (!canControl(room, member, c)) throw new GameError('You cannot change this creature.');
   const s = c.stats[int(index, 0, LIMITS.stats, -1)];
   if (!s || !isBar(s)) throw new GameError('That bar no longer exists.');
-  const next = isBlank(value) ? s.value + int(delta, -9999, 9999, 0) : int(value, 0, s.max, s.value);
+  const next = isBlank(value) ? s.value + int(delta, -BIG, BIG, 0) : int(value, 0, s.max, s.value);
   s.value = Math.min(s.max, Math.max(0, next));
   touch(room);
   return s;
@@ -561,6 +843,7 @@ function updateSettings(room, clientId, settings = {}) {
 /* ------------------------------------------------------------------ */
 
 function hpStatus(c) {
+  if (c.lair) return 'Lair';
   if (c.hp <= 0) return 'Defeated';
   const pct = c.hp / c.hpMax;
   if (pct >= 1) return 'Unharmed';
@@ -584,6 +867,7 @@ function viewFor(room, clientId, isOnline = () => false) {
 
   const current = room.combat.active ? room.combatants.find((c) => c.id === room.combat.turnId) : null;
 
+  const byIdAll = new Map(room.combatants.map((c) => [c.id, c]));
   const combatants = sortedCombatants(room)
     .filter((c) => isDm || !c.hidden)
     .map((c) => {
@@ -596,8 +880,17 @@ function viewFor(room, clientId, isOnline = () => false) {
         name: c.name,
         cls: c.cls,
         level: c.level,
-        initiative: c.initiative,
+        initiative: sortKey(room, c)[0],
         initBonus: secret ? null : c.initBonus || 0,
+        boss: Boolean(c.boss),
+        lair: Boolean(c.lair),
+        leader: c.leader && (isDm || !(byIdAll.get(c.leader) || {}).hidden) ? c.leader : null,
+        leaderName: c.leader && byIdAll.get(c.leader) && (isDm || !byIdAll.get(c.leader).hidden) ? byIdAll.get(c.leader).name : null,
+        onLeaderDeath: isDm ? c.onLeaderDeath || 'dies' : undefined,
+        followLeader: Boolean(c.followLeader),
+        conditions: (c.conditions || [])
+          .filter((k) => isDm || !k.secret)
+          .map((k) => ({ ...k, canRemove: canRemoveCondition(me, c, k) })),
         hidden: Boolean(c.hidden),
         hp: secret ? null : c.hp,
         hpMax: secret ? null : c.hpMax,
@@ -654,7 +947,12 @@ return {
   setTurn,
   updateSettings,
   adjustStat,
+  addCondition,
+  removeCondition,
+  conditionLevel,
   BAR_COLORS,
+  TINTS,
+  CONDITION_PRESETS,
   sortedCombatants,
   eligible,
   viewFor,

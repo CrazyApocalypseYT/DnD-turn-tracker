@@ -91,10 +91,12 @@
         <button id="btn-start" class="btn accent dm-only" hidden>⚔️ Start combat</button>
         <button id="btn-end" class="btn danger ghost dm-only" hidden>End combat</button>
       </div>
+      <div id="boss-bar" class="boss-bar" hidden></div>
     </section>
 
     <!-- ===================== TABLE DISPLAY (tablet) ===================== -->
     <section id="display" class="display" hidden>
+      <div id="d-boss" class="boss-bar d-boss" hidden></div>
       <div class="d-top">
         <div id="d-now" class="d-now"></div>
         <div class="d-next-box">
@@ -165,7 +167,7 @@
             </label>
             <label class="field">
               <span>Damage</span>
-              <input id="dmg-amount" type="number" inputmode="numeric" min="1" max="9999" required placeholder="0" />
+              <input id="dmg-amount" type="number" inputmode="numeric" min="1" required placeholder="0" />
             </label>
             <button class="btn danger wide" type="submit">Hit!</button>
           </form>
@@ -176,6 +178,10 @@
         <section id="dm-panel" class="panel" hidden>
           <h2>👑 Dungeon Master</h2>
           <button id="btn-add-enemy" class="btn accent wide">+ Add enemies</button>
+          <div class="dm-quick">
+            <button id="btn-add-boss" class="btn ghost small">👑 + Boss</button>
+            <button id="btn-add-lair" class="btn ghost small" title="A turn at initiative 20 for lair actions">🏰 + Lair actions</button>
+          </div>
           <label class="toggle">
             <input type="checkbox" id="set-reveal" />
             <span>Show enemy HP, AC &amp; stats to players</span>
@@ -216,39 +222,63 @@
         </label>
         <label class="field" data-for="pc companion">
           <span>Level</span>
-          <input name="level" type="number" inputmode="numeric" min="0" max="30" value="1" />
+          <input name="level" type="number" inputmode="numeric" min="0" value="1" />
         </label>
         <label class="field">
           <span>Max HP *</span>
-          <input name="hpMax" type="number" inputmode="numeric" min="1" max="9999" required value="10" />
+          <input name="hpMax" type="number" inputmode="numeric" min="1" required value="10" />
         </label>
         <label class="field">
           <span>Current HP</span>
-          <input name="hp" type="number" inputmode="numeric" min="0" max="9999" placeholder="= max" />
+          <input name="hp" type="number" inputmode="numeric" min="0" placeholder="= max" />
         </label>
         <label class="field">
           <span>AC (CA)</span>
-          <input name="ac" type="number" inputmode="numeric" min="0" max="50" value="10" />
+          <input name="ac" type="number" inputmode="numeric" min="0" value="10" />
         </label>
         <label class="field">
           <span>Initiative</span>
           <div class="with-btn">
-            <input name="initiative" type="number" inputmode="decimal" step="any" min="-20" max="99" value="0" />
+            <input name="initiative" type="number" inputmode="decimal" step="any" value="0" />
             <button type="button" id="btn-roll" class="btn ghost" title="Roll d20 + initiative bonus">🎲</button>
           </div>
         </label>
         <label class="field">
           <span>Init. bonus (for 🎲)</span>
-          <input name="initBonus" type="number" inputmode="numeric" min="-10" max="20" value="0" />
+          <input name="initBonus" type="number" inputmode="numeric" value="0" />
         </label>
         <label class="field" data-for="enemy-new">
           <span>How many</span>
-          <input name="count" type="number" inputmode="numeric" min="1" max="20" value="1" />
+          <input name="count" type="number" inputmode="numeric" min="1" max="50" value="1" />
         </label>
         <label class="toggle span2" data-for="enemy">
           <input type="checkbox" name="hidden" />
           <span>Hidden from players (reveal later)</span>
         </label>
+        <label class="toggle span2 boss-toggle" data-for="enemy">
+          <input type="checkbox" name="boss" />
+          <span>👑 Boss – always shown in the boss bar at the top of every screen</span>
+        </label>
+        <div class="summon-box span2" data-for="enemy">
+          <label class="field">
+            <span>🔗 Summoned by / serves</span>
+            <select name="leader"><option value="">— nobody (independent) —</option></select>
+          </label>
+          <div class="summon-opts">
+            <label class="field">
+              <span>If its leader falls</span>
+              <select name="onLeaderDeath">
+                <option value="dies">💀 it dies too</option>
+                <option value="flees">🏃 it flees (removed)</option>
+                <option value="stays">⚔️ it keeps fighting</option>
+              </select>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" name="followLeader" />
+              <span>Acts right after its leader</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <div class="stats-head">
@@ -260,6 +290,8 @@
         <button type="button" id="btn-add-bar" class="btn ghost small">+ Bar</button>
         <button type="button" id="btn-add-mana" class="btn ghost small">+ 🔵 Mana</button>
         <button type="button" id="btn-add-move" class="btn ghost small">+ 🟡 Movement</button>
+        <button type="button" id="btn-add-legact" class="btn ghost small" data-for="enemy">+ 🟠 Legendary actions</button>
+        <button type="button" id="btn-add-legres" class="btn ghost small" data-for="enemy">+ 🟣 Legendary resistance</button>
       </div>
       <div id="stats" class="stats-edit"></div>
 
@@ -271,6 +303,61 @@
         <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ======================= conditions dialog ======================= -->
+  <dialog id="cond-dialog">
+    <div class="cond-head">
+      <h2 id="cond-title">Effects</h2>
+      <button type="button" id="btn-cond-close" class="btn ghost small">Done</button>
+    </div>
+    <div id="cond-active" class="cond-active"></div>
+
+    <label class="field cond-rounds">
+      <span>Duration in rounds (empty = until removed; counts down at the end of the creature's turn)</span>
+      <input id="cond-rounds" type="number" inputmode="numeric" min="1" placeholder="until removed" />
+    </label>
+
+    <h3>D&amp;D conditions</h3>
+    <div id="cond-official" class="cond-grid"></div>
+    <h3>Common effects</h3>
+    <div id="cond-common" class="cond-grid"></div>
+
+    <details class="cond-custom">
+      <summary>➕ Custom buff / debuff</summary>
+      <form id="cond-form" class="grid">
+        <label class="field"><span>Name *</span><input name="name" maxlength="24" required placeholder="e.g. Hunter's Mark" /></label>
+        <label class="field"><span>Emoji</span><input name="emoji" maxlength="16" placeholder="🎯" /></label>
+        <label class="field"><span>Type</span>
+          <select name="kind">
+            <option value="buff">⬆️ Buff</option>
+            <option value="debuff">⬇️ Debuff</option>
+            <option value="neutral">🔹 Neutral</option>
+          </select>
+        </label>
+        <label class="field"><span>Bar color</span>
+          <select name="color">
+            <option value="">No color change</option>
+            <option value="green">🟢 Green</option><option value="red">🔴 Red</option><option value="orange">🟠 Orange</option>
+            <option value="yellow">🟡 Yellow</option><option value="blue">🔵 Blue</option><option value="cyan">🩵 Cyan</option>
+            <option value="purple">🟣 Purple</option><option value="pink">🩷 Pink</option><option value="gray">⚪ Gray</option>
+          </select>
+        </label>
+        <label class="field cond-bar-field"><span>Which bar</span>
+          <select name="bar">
+            <option value="hp">❤️ HP bar</option>
+            <option value="mana">🔵 Mana / magic bars</option>
+            <option value="move">🟡 Movement bars</option>
+            <option value="all">All bars</option>
+            <option value="stat">A specific bar…</option>
+          </select>
+        </label>
+        <label class="field cond-stat-field" hidden><span>Bar name</span><input name="stat" maxlength="40" placeholder="e.g. Ki" /></label>
+        <label class="toggle span2" id="cond-secret-field"><input type="checkbox" name="secret" /><span>🤫 Secret (only the DM sees it)</span></label>
+        <button class="btn primary span2" type="submit">Add effect</button>
+      </form>
+    </details>
+    <p id="cond-error" class="error" role="alert"></p>
   </dialog>
 
   <!-- ========================= invite dialog ========================= -->

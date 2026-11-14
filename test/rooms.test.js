@@ -172,12 +172,12 @@ test('DM key moves the DM role to a new device', () => {
 
 test('inputs are clamped and sanitized', () => {
   const room = setup();
-  const [c] = g.saveCombatant(room, 'p1', { type: 'pc', name: '  <b>X</b>\u0000  ', hpMax: 999999, hp: -5, ac: 'abc', level: 99, initiative: '12.5' });
+  const [c] = g.saveCombatant(room, 'p1', { type: 'pc', name: '  <b>X</b>\u0000  ', hpMax: 5e9, hp: -5, ac: 'abc', level: 1e9, initiative: '12.5' });
   assert.equal(c.name, '<b>X</b>'); // stored as text; the client renders with textContent
-  assert.equal(c.hpMax, 9999);
+  assert.equal(c.hpMax, 1000000, 'numbers are only capped at a sanity limit of 1,000,000');
   assert.equal(c.hp, 0);
   assert.equal(c.ac, 10);
-  assert.equal(c.level, 30);
+  assert.equal(c.level, 1000000);
   assert.equal(c.initiative, 12.5);
 });
 
@@ -254,4 +254,125 @@ test('a device can join an existing room as a table display, without seeing the 
   assert.throws(() => g.saveCombatant(room, 'tab', pc('X', 1)), /only displays/);
   g.joinRoom(room, 'p1', 'Alice', undefined, { screen: true });
   assert.equal(room.members.p1.role, 'player', 'existing members keep their role');
+});
+
+test('no practical limits: high levels, huge monster HP/AC, many custom stats', () => {
+  const room = setup();
+  const [hero] = g.saveCombatant(room, 'p1', pc('Epic', 10, { level: 45 }));
+  assert.equal(hero.level, 45);
+  const stats = Array.from({ length: 60 }, (_, i) => ({ key: `Stat ${i}`, value: String(i) }));
+  stats.push({ key: 'Legendary HP pool', value: 250000, max: 250000 });
+  const [tarrasque] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Tarrasque+', hpMax: 120000, ac: 65, initiative: 30, stats });
+  assert.equal(tarrasque.hpMax, 120000);
+  assert.equal(tarrasque.ac, 65);
+  assert.equal(tarrasque.stats.length, 61);
+  assert.equal(tarrasque.stats[60].max, 250000);
+  g.changeHp(room, 'p1', { targetId: tarrasque.id, amount: 50000, mode: 'damage' });
+  assert.equal(tarrasque.hp, 70000);
+});
+
+test('conditions: official presets, custom ones, durations that wear off', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', pc('Aria', 15, { stats: [{ key: 'Movement', max: 30 }] }));
+  const [bo] = g.saveCombatant(room, 'p2', pc('Bo', 12));
+  const [gob] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Goblin', hpMax: 7, initiative: 5 });
+
+  const poisoned = g.addCondition(room, 'dm-secret', { id: aria.id, condition: { preset: 'poisoned' } });
+  assert.equal(poisoned.emoji, '🤢');
+  assert.equal(poisoned.kind, 'debuff');
+  assert.deepEqual([poisoned.color, poisoned.bar], ['purple', 'hp']);
+
+  // a player blesses an ally for 2 rounds and restrains an enemy
+  const bless = g.addCondition(room, 'p2', { id: aria.id, condition: { preset: 'blessed', rounds: 2 } });
+  g.addCondition(room, 'p2', { id: gob.id, condition: { preset: 'restrained' } });
+  // custom buff that recolors one named bar
+  const custom = g.addCondition(room, 'p1', { id: aria.id, condition: { name: 'Wind walk', emoji: '🌪️', kind: 'buff', color: 'cyan', bar: 'stat:Movement', rounds: '' } });
+  assert.deepEqual([custom.bar, custom.rounds], ['stat:Movement', null]);
+  assert.throws(() => g.addCondition(room, 'p1', { id: aria.id, condition: { name: '' } }), /name/);
+  assert.throws(() => g.addCondition(room, 'p1', { id: aria.id, condition: { preset: 'nope' } }), /Unknown/);
+
+  // exhaustion stacks 1..6
+  const ex = g.addCondition(room, 'dm-secret', { id: bo.id, condition: { preset: 'exhaustion' } });
+  g.addCondition(room, 'dm-secret', { id: bo.id, condition: { preset: 'exhaustion' } });
+  assert.equal(ex.level, 2);
+  g.conditionLevel(room, 'dm-secret', { id: bo.id, condId: ex.id, delta: -1 });
+  assert.equal(ex.level, 1);
+
+  // durations tick down when the creature's turn ends
+  g.startCombat(room, 'dm-secret'); // Aria
+  g.nextTurn(room, 'p1'); // end of Aria's turn: bless 2 -> 1
+  assert.equal(aria.conditions.find((k) => k.key === 'blessed').rounds, 1);
+  g.nextTurn(room, 'p2'); // Bo -> Goblin
+  g.nextTurn(room, 'dm-secret'); // Goblin -> Aria (round 2)
+  g.nextTurn(room, 'p1'); // end of Aria's turn: bless wears off
+  assert.equal(aria.conditions.some((k) => k.id === bless.id), false);
+  assert.ok(room.log.some((l) => l.text === '✨ Blessed wore off Aria.'));
+  assert.ok(aria.conditions.some((k) => k.id === poisoned.id), 'conditions without a duration stay');
+});
+
+test('conditions: removal permissions and secret conditions', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', pc('Aria', 15));
+  const [gob] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Goblin', hpMax: 7 });
+  const dmPoison = g.addCondition(room, 'dm-secret', { id: aria.id, condition: { preset: 'poisoned' } });
+  const bobsRestrain = g.addCondition(room, 'p2', { id: gob.id, condition: { preset: 'restrained' } });
+  const curse = g.addCondition(room, 'dm-secret', { id: aria.id, condition: { preset: 'cursed', secret: true } });
+  const playerSecret = g.addCondition(room, 'p1', { id: aria.id, condition: { name: 'Sneaky', secret: true } });
+  assert.equal(playerSecret.secret, false, 'only the DM can make secret conditions');
+
+  // players don't see secret conditions
+  const view = g.viewFor(room, 'p1').combatants.find((c) => c.name === 'Aria');
+  assert.ok(!view.conditions.some((k) => k.id === curse.id));
+  assert.ok(g.viewFor(room, 'dm-secret').combatants.find((c) => c.name === 'Aria').conditions.some((k) => k.id === curse.id));
+  assert.ok(!room.log.some((l) => l.text.includes('Cursed')), 'secret condition not in the public log');
+
+  // Alice can end the DM's poison on her own character, but not Bob's restrain on the goblin
+  g.removeCondition(room, 'p1', { id: aria.id, condId: dmPoison.id });
+  assert.throws(() => g.removeCondition(room, 'p1', { id: gob.id, condId: bobsRestrain.id }), /Only the DM or whoever added it/);
+  g.removeCondition(room, 'p2', { id: gob.id, condId: bobsRestrain.id });
+  assert.throws(() => g.removeCondition(room, 'p1', { id: aria.id, condId: curse.id }), /Only the DM/);
+  g.removeCondition(room, 'dm-secret', { id: aria.id, condId: curse.id });
+});
+
+test('bosses, summons that die/flee/stay with their leader, and acting right after the leader', () => {
+  const room = setup();
+  g.saveCombatant(room, 'p1', pc('Aria', 15));
+  const [lich] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Lich', hpMax: 135, initiative: 18, boss: true });
+  assert.equal(lich.boss, true);
+  const skels = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Skeleton', hpMax: 13, initiative: 3, count: 2, leader: lich.id, onLeaderDeath: 'dies', followLeader: true });
+  const [ghoul] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Ghoul', hpMax: 22, initiative: 10, leader: lich.id, onLeaderDeath: 'flees' });
+  const [knight] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Death knight', hpMax: 180, initiative: 12, leader: lich.id, onLeaderDeath: 'stays' });
+  const [bone] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Bone imp', hpMax: 5, initiative: 1, leader: skels[0].id });
+
+  // followers act right after the Lich, before Aria
+  assert.deepEqual(g.sortedCombatants(room).map((c) => c.name), ['Lich', 'Skeleton 1', 'Skeleton 2', 'Aria', 'Death knight', 'Ghoul', 'Bone imp']);
+  assert.equal(g.viewFor(room, 'p1').combatants.find((c) => c.name === 'Skeleton 1').initiative, 18);
+  assert.equal(g.viewFor(room, 'p1').combatants.find((c) => c.name === 'Skeleton 1').leaderName, 'Lich');
+
+  // no loops
+  assert.throws(() => g.saveCombatant(room, 'dm-secret', { id: lich.id, name: 'Lich', hpMax: 135, leader: skels[0].id }), /itself or its own summons/);
+
+  g.startCombat(room, 'dm-secret');
+  g.changeHp(room, 'p1', { targetId: lich.id, amount: 200, mode: 'damage' });
+  assert.equal(lich.hp, 0);
+  assert.equal(skels[0].hp, 0, 'summons die with their leader');
+  assert.equal(skels[1].hp, 0);
+  assert.equal(bone.hp, 0, 'and so do their own summons');
+  assert.ok(!room.combatants.includes(ghoul), 'the ghoul fled');
+  assert.equal(knight.hp, 180, 'the death knight keeps fighting');
+  assert.ok(room.log.some((l) => l.text === '💀 Skeleton 1 perishes with Lich!'));
+  assert.ok(room.log.some((l) => l.text === '🏃 Ghoul flees as Lich falls!'));
+});
+
+test('removing a leader just unlinks its summons; lair actions act on 20 and lose ties', () => {
+  const room = setup();
+  const [lich] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Lich', hpMax: 135, initiative: 20 });
+  const [sk] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Skeleton', hpMax: 13, leader: lich.id, followLeader: true });
+  const [lair] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Lair actions', initiative: 20, lair: true });
+  g.saveCombatant(room, 'p1', pc('Aria', 20));
+  assert.equal(g.sortedCombatants(room).at(-1).id, lair.id, 'lair loses the tie at 20');
+  assert.throws(() => g.changeHp(room, 'dm-secret', { targetId: lair.id, amount: 5, mode: 'damage' }), /no HP/);
+  g.removeCombatant(room, 'dm-secret', lich.id);
+  assert.equal(sk.leader, null);
+  assert.equal(sk.hp, 13);
 });
