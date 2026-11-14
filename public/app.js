@@ -404,6 +404,8 @@
     if (confirm('End combat? The turn order will reset.')) act('combat:end');
   });
   $('#btn-add-enemy').addEventListener('click', () => openEditor('enemy'));
+  $('#btn-add-boss').addEventListener('click', () => openEditor('enemy', null, { boss: true }));
+  $('#btn-add-lair').addEventListener('click', () => act('combatant:save', { combatant: { type: 'enemy', name: 'Lair actions', initiative: 20, hpMax: 1, lair: true } }));
   $('#set-reveal').addEventListener('change', (e) => act('settings:update', { revealEnemies: e.target.checked }));
 
   /* ------------------------------------------------------------ */
@@ -434,6 +436,8 @@
     renderDamage();
     renderDmPanel();
     renderDisplay();
+    renderBossBar($('#boss-bar'), { big: false });
+    renderConditionsDialog();
     renderMembers();
     renderLog();
 
@@ -483,11 +487,57 @@
     return pct <= 25 ? 'low' : pct <= 50 ? 'mid' : '';
   }
 
+  /* ---------- conditions: bar colors + chips ---------- */
+  const MAGIC_RE = /mana|spell|slot|magic|\bki\b|sorcery|arcan/i;
+  const MOVE_RE = /move|movement|speed|feet|\bft\b/i;
+
+  /** Color a condition paints on a bar ('hp' or a bar stat), latest condition wins. */
+  function tintFor(c, target) {
+    let color = null;
+    for (const k of c.conditions || []) {
+      if (!k.color || !k.bar) continue;
+      let hit = k.bar === 'all';
+      if (target === 'hp') hit = hit || k.bar === 'hp';
+      else {
+        hit = hit
+          || (k.bar === 'mana' && MAGIC_RE.test(target.key))
+          || (k.bar === 'move' && MOVE_RE.test(target.key))
+          || (k.bar.startsWith('stat:') && k.bar.slice(5).toLowerCase() === target.key.toLowerCase());
+      }
+      if (hit) color = k.color;
+    }
+    return color;
+  }
+
+  function barFill(pct, tint) {
+    return h('div', { class: tint ? `tinted tint-${tint}` : null, style: `width:${pct}%` });
+  }
+
+  function condText(k) {
+    return `${k.emoji} ${k.name}${k.level ? ` ${k.level}` : ''}`;
+  }
+
+  /** Condition chips; tapping them opens the effects dialog. */
+  function conditionChips(c, { compact = false } = {}) {
+    const list = c.conditions || [];
+    if (!list.length) return null;
+    const open = isScreen() ? null : () => openConditions(c.id);
+    return h('div', { class: `c-conds${compact ? ' compact' : ''}` }, list.map((k) => h(open ? 'button' : 'span', {
+      class: `cond cond-${k.kind}${k.secret ? ' cond-secret' : ''}`,
+      title: `${k.name}${k.rounds ? ` – ${k.rounds} round(s) left` : ''}${k.secret ? ' (secret)' : ''}`,
+      onclick: open,
+      type: open ? 'button' : null,
+    }, compact ? `${k.emoji}${k.level ? k.level : ''}` : condText(k),
+    !compact && k.rounds ? h('small', {}, ` ⏳${k.rounds}`) : null,
+    !compact && k.secret ? h('small', {}, ' 🤫') : null)));
+  }
+
   function hpRow(c) {
+    if (c.lair) return h('div', { class: 'c-hp lair-row muted small' }, '🏰 Lair actions happen on initiative 20 (losing ties).');
     const pct = Math.max(0, Math.min(100, c.hpPct));
     const text = c.hp === null ? c.status : `${c.hp} / ${c.hpMax}`;
     return h('div', { class: 'c-hp' },
-      h('div', { class: `hpbar ${hpClass(pct)}`, title: c.status }, h('div', { style: `width:${pct}%` })),
+      h('div', { class: `hpbar ${hpClass(pct)}`, title: c.status }, barFill(pct, tintFor(c, 'hp'))),
       h('span', { class: 'hptext' }, `❤️ ${text}`));
   }
 
@@ -505,7 +555,7 @@
       };
       return h('div', { class: `res res-${s.color}` },
         h('span', { class: 'res-name' }, s.refill ? `${s.key} 🔁` : s.key),
-        h('div', { class: 'resbar', title: s.refill ? 'Refills at the start of each turn' : '' }, h('div', { style: `width:${pct}%` })),
+        h('div', { class: 'resbar', title: s.refill ? 'Refills at the start of each turn' : '' }, barFill(pct, tintFor(c, s))),
         canEdit
           ? h('button', { class: 'res-val linkish', title: 'Set value', onclick: set }, `${s.value}/${s.max}`)
           : h('span', { class: 'res-val' }, `${s.value}/${s.max}`),
@@ -521,7 +571,7 @@
   }
 
   function quickHp(c, { allowDamage, allowHeal }) {
-    const input = h('input', { type: 'number', min: '1', max: '9999', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}` });
+    const input = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}` });
     const go = async (mode) => {
       const amount = Number(input.value);
       if (!amount || amount < 1) { input.focus(); return; }
@@ -555,16 +605,20 @@
 
     for (const c of items) {
       const isCur = c.id === state.combat.turnId;
-      const typeLabel = c.type === 'pc' ? 'Player' : c.type === 'companion' ? 'Friendly NPC' : 'Enemy';
+      const typeLabel = c.lair ? 'Lair' : c.type === 'pc' ? 'Player' : c.type === 'companion' ? 'Friendly NPC' : 'Enemy';
       const sub = [];
       if (c.type !== 'enemy') {
         if (c.cls) sub.push(c.cls);
         if (c.level) sub.push(`Lv ${c.level}`);
         sub.push(c.mine && !dm ? 'you' : c.ownerName);
+      } else if (c.leaderName) {
+        sub.push(`🔗 serves ${c.leaderName}${c.followLeader ? ' · acts right after' : ''}`);
       }
 
       const actions = [];
-      if (c.mine) {
+      if (c.mine && c.lair) {
+        actions.push(h('button', { class: 'btn ghost small', onclick: () => openEditor(c.type, c) }, '✏️ Edit'));
+      } else if (c.mine) {
         actions.push(...quickHp(c, { allowDamage: true, allowHeal: true }));
         actions.push(h('button', { class: 'btn ghost small', onclick: () => openEditor(c.type, c) }, '✏️ Edit'));
       } else if (isScreen()) {
@@ -574,23 +628,30 @@
       } else if (!dm && c.type !== 'enemy') {
         actions.push(...quickHp(c, { allowDamage: false, allowHeal: true }));
       }
+      if (!isScreen() && !c.lair) {
+        actions.push(h('button', { class: 'btn ghost small', title: 'Buffs, debuffs and conditions', onclick: () => openConditions(c.id) }, '✨ Effects'));
+      }
+      if (dm && c.type === 'enemy' && !c.lair && !c.defeated) {
+        actions.push(h('button', { class: 'btn ghost small', title: 'Add creatures summoned by / serving this one', onclick: () => openEditor('enemy', null, { leader: c.id, followLeader: true, name: '' }) }, '➕ Summon'));
+      }
       if (dm && state.combat.active && !isCur && !c.hidden) {
         actions.push(h('button', { class: 'btn ghost small', title: 'Make it this creature\'s turn', onclick: () => act('turn:set', { id: c.id }) }, '▶ Give turn'));
       }
 
       const card = h('li', {
-        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine'].filter(Boolean).join(' '),
+        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
         'data-id': c.id,
       },
         h('div', { class: 'init', title: 'Initiative' }, fmtInit(c.initiative)),
         h('div', { class: 'c-main' },
           h('div', { class: 'c-title' },
-            h('span', { class: 'c-name' }, c.name),
-            h('span', { class: `badge ${c.type}` }, typeLabel),
+            h('span', { class: 'c-name' }, c.lair ? `🏰 ${c.name}` : c.name),
+            c.boss ? h('span', { class: 'badge boss-b' }, '👑 Boss') : h('span', { class: `badge ${c.type}` }, typeLabel),
             c.hidden && h('span', { class: 'badge hidden-b' }, 'Hidden'),
             c.defeated && h('span', { class: 'badge' }, c.type === 'enemy' ? '💀 Defeated' : '0 HP')),
           sub.length ? h('div', { class: 'c-sub' }, sub.join(' · ')) : null),
-        h('div', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC')),
+        c.lair ? h('span', {}) : h('div', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC')),
+        conditionChips(c) ? h('div', { class: 'c-conds-row' }, conditionChips(c)) : null,
         hpRow(c),
         resourceBars(c),
         textStats(c),
@@ -636,7 +697,7 @@
     const panel = $('#damage-panel');
     if (isDm() || isScreen()) { panel.hidden = true; return; }
     panel.hidden = false;
-    const enemies = state.combatants.filter((c) => c.type === 'enemy' && !c.defeated);
+    const enemies = state.combatants.filter((c) => c.type === 'enemy' && !c.defeated && !c.lair);
     const mine = state.combatants.filter((c) => c.mine);
     $('#damage-form').hidden = enemies.length === 0;
     $('#damage-empty').hidden = enemies.length > 0;
@@ -695,6 +756,7 @@
   const actsInRound = (c) => !c.hidden && !(c.type === 'enemy' && c.defeated);
 
   function sideLabel(c) {
+    if (c.lair) return 'Lair actions';
     if (c.type === 'pc') return `Player · ${c.ownerName}`;
     if (c.type === 'companion') return `Friendly NPC · ${c.ownerName}`;
     return 'Enemy';
@@ -711,25 +773,46 @@
   }
 
   function dHp(c) {
+    if (c.lair) return h('div', { class: 'c-hp lair-row muted small' }, 'Initiative 20 · loses ties');
     const pct = Math.max(0, Math.min(100, c.hpPct));
     return h('div', { class: 'c-hp' },
-      h('div', { class: `hpbar ${hpClass(pct)}` }, h('div', { style: `width:${pct}%` })),
+      h('div', { class: `hpbar ${hpClass(pct)}` }, barFill(pct, tintFor(c, 'hp'))),
       h('span', { class: 'hptext' }, c.hp === null ? c.status : `${c.hp} / ${c.hpMax}`));
+  }
+
+  /** Boss bar: every boss, always at the top of the screen. */
+  function renderBossBar(el, { big }) {
+    const bosses = state.combatants.filter((c) => c.boss && !c.lair);
+    el.hidden = bosses.length === 0;
+    if (!bosses.length) { el.replaceChildren(); return; }
+    el.replaceChildren(...bosses.map((b) => {
+      const pct = Math.max(0, Math.min(100, b.hpPct));
+      const minions = state.combatants.filter((x) => x.leader === b.id && !x.defeated).length;
+      return h('div', { class: ['boss', b.defeated && 'defeated', b.id === state.combat.turnId && 'is-now', big && 'big'].filter(Boolean).join(' ') },
+        h('div', { class: 'boss-head' },
+          h('span', { class: 'boss-name' }, `👑 ${b.name}`),
+          conditionChips(b, { compact: true }),
+          minions ? h('span', { class: 'boss-minions', title: 'Summons still standing' }, `🔗 ${minions}`) : null,
+          b.id === state.combat.turnId ? h('span', { class: 'd-tag now' }, 'NOW') : null,
+          h('span', { class: 'boss-hp' }, b.defeated ? '💀 Defeated' : b.hp === null ? b.status : `${b.hp} / ${b.hpMax}`)),
+        h('div', { class: `hpbar boss-track ${hpClass(pct)}` }, barFill(pct, tintFor(b, 'hp'))));
+    }));
   }
 
   function dCard(c, tag) {
     return h('div', {
-      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
+      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
     },
       h('div', { class: 'd-card-head' },
         h('span', { class: 'init' }, String(c.initiative)),
         h('div', { class: 'd-card-title' },
-          h('div', { class: 'c-name' }, c.name),
-          h('div', { class: 'c-sub' }, [sideLabel(c), c.cls, c.level && c.type !== 'enemy' ? `Lv ${c.level}` : ''].filter(Boolean).join(' · '))),
+          h('div', { class: 'c-name' }, `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`),
+          h('div', { class: 'c-sub' }, [sideLabel(c), c.leaderName ? `🔗 ${c.leaderName}` : '', c.cls, c.level && c.type !== 'enemy' ? `Lv ${c.level}` : ''].filter(Boolean).join(' · '))),
         tag === 'now' && h('span', { class: 'd-tag now' }, 'NOW'),
         tag === 'next' && h('span', { class: 'd-tag next' }, 'NEXT'),
         c.defeated && h('span', { class: 'd-tag' }, c.type === 'enemy' ? '💀' : '0 HP'),
-        h('span', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC'))),
+        c.lair ? null : h('span', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC'))),
+      conditionChips(c),
       dHp(c),
       resourceBars(c, { controls: false }));
   }
@@ -753,13 +836,15 @@
     const now = $('#d-now');
     now.className = `d-now ${cur ? (isAlly(cur) ? 'ally' : 'enemy') : ''}`;
     if (cur) {
-      now.replaceChildren(
+      now.replaceChildren(...[
         h('div', { class: 'd-round' }, `Round ${combat.round}`),
-        h('div', { class: 'd-now-side' }, isAlly(cur) ? '🛡️ Ally’s turn' : '⚔️ Enemy’s turn'),
-        h('div', { class: 'd-now-name' }, cur.name),
-        h('div', { class: 'd-now-sub' }, [sideLabel(cur), cur.cls].filter(Boolean).join(' · ')),
+        h('div', { class: 'd-now-side' }, cur.lair ? '🏰 Lair turn' : isAlly(cur) ? '🛡️ Ally’s turn' : '⚔️ Enemy’s turn'),
+        h('div', { class: 'd-now-name' }, `${cur.boss ? '👑 ' : cur.lair ? '🏰 ' : ''}${cur.name}`),
+        h('div', { class: 'd-now-sub' }, [sideLabel(cur), cur.leaderName ? `🔗 serves ${cur.leaderName}` : '', cur.cls].filter(Boolean).join(' · ')),
+        conditionChips(cur),
         dHp(cur),
-        resourceBars(cur, { controls: false }));
+        resourceBars(cur, { controls: false }),
+      ].filter(Boolean)); // replaceChildren would print null as text
       if (combat.seq !== lastDisplaySeq) {
         lastDisplaySeq = combat.seq;
         now.classList.remove('pop');
@@ -784,18 +869,39 @@
     const strip = $('#d-strip');
     strip.replaceChildren(...state.combatants.map((c) => h('li', {
       class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
-    }, h('b', {}, String(c.initiative)), c.name)));
+    }, h('b', {}, String(c.initiative)), `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`, (c.conditions || []).length ? h('span', { class: 'chip-conds' }, c.conditions.map((k) => k.emoji).join('')) : null)));
     const curChip = strip.querySelector('.is-now');
     if (curChip) curChip.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
 
     // allies / enemies
     const tagOf = (c) => (c.id === combat.turnId ? 'now' : c.id === nextId ? 'next' : null);
     const allies = state.combatants.filter(isAlly);
-    const enemies = state.combatants.filter((c) => !isAlly(c));
+    // enemies: bosses first, each leader followed by its summons (indented), lair last
+    const enemyList = state.combatants.filter((c) => !isAlly(c));
+    const ids = new Set(enemyList.map((c) => c.id));
+    const enemies = [];
+    const placed = new Set();
+    const place = (c, depth) => {
+      if (placed.has(c.id)) return;
+      placed.add(c.id);
+      enemies.push([c, depth]);
+      for (const m of enemyList.filter((x) => x.leader === c.id)) place(m, depth + 1);
+    };
+    const roots = enemyList.filter((c) => !c.lair && !(c.leader && ids.has(c.leader)));
+    for (const c of [...roots.filter((c) => c.boss), ...roots.filter((c) => !c.boss)]) place(c, 0);
+    for (const c of enemyList) place(c, 0); // lair + anything left over
     $('#d-allies').replaceChildren(...(allies.length ? allies.map((c) => dCard(c, tagOf(c))) : [h('p', { class: 'muted' }, 'No allies yet.')]));
-    $('#d-enemies').replaceChildren(...(enemies.length ? enemies.map((c) => dCard(c, tagOf(c))) : [h('p', { class: 'muted' }, 'No enemies… yet.')]));
+    $('#d-enemies').replaceChildren(...(enemies.length
+      ? enemies.map(([c, depth]) => {
+        const card = dCard(c, tagOf(c));
+        if (depth) card.style.marginLeft = `${Math.min(depth, 3) * 1.1}rem`;
+        return card;
+      })
+      : [h('p', { class: 'muted' }, 'No enemies… yet.')]));
+    const fighters = enemyList.filter((c) => !c.lair);
     $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated).length} standing` : '';
-    $('#d-enemies-count').textContent = enemies.length ? `${enemies.filter((c) => !c.defeated).length} left` : '';
+    $('#d-enemies-count').textContent = fighters.length ? `${fighters.filter((c) => !c.defeated).length} left` : '';
+    renderBossBar($('#d-boss'), { big: true });
 
     // latest events
     $('#d-log').replaceChildren(...state.log.slice(-3).reverse().map((l) => h('li', {}, l.text)));
@@ -852,7 +958,7 @@
       Object.entries(COLOR_LABELS).map(([v, label]) => h('option', { value: v, selected: stat.color === v }, label)));
     const refill = h('input', { type: 'checkbox', 'data-refill': '', checked: Boolean(stat.refill) });
     const maxInput = h('input', {
-      type: 'number', inputmode: 'numeric', min: '1', max: '9999', placeholder: 'Max', 'aria-label': 'Max (makes it a bar)',
+      type: 'number', inputmode: 'numeric', min: '1', placeholder: 'Max', 'aria-label': 'Max (makes it a bar)',
       value: stat.max ?? '', 'data-max': '',
     });
     const opts = h('div', { class: 'bar-opts' }, color, h('label', { class: 'toggle small' }, refill, h('span', {}, 'Refills every turn')));
@@ -878,6 +984,106 @@
   $('#btn-add-bar').addEventListener('click', () => addStat({ bar: true }));
   $('#btn-add-mana').addEventListener('click', () => addStat({ key: 'Mana', max: 10, value: 10, color: 'blue' }));
   $('#btn-add-move').addEventListener('click', () => addStat({ key: 'Movement', max: 30, value: 30, color: 'yellow', refill: true }));
+  $('#btn-add-legact').addEventListener('click', () => addStat({ key: 'Legendary actions', max: 3, value: 3, color: 'orange', refill: true }));
+  $('#btn-add-legres').addEventListener('click', () => addStat({ key: 'Legendary resistance', max: 3, value: 3, color: 'purple' }));
+
+  /* ------------------------------------------------------------ */
+  /* conditions dialog (buffs / debuffs)                           */
+  /* ------------------------------------------------------------ */
+  const condDlg = $('#cond-dialog');
+  const condForm = $('#cond-form');
+  const PRESETS = window.DndRooms.CONDITION_PRESETS;
+  let condFor = null;
+
+  function presetButton(p) {
+    return h('button', {
+      type: 'button',
+      class: `cond-preset cond-${p.kind}`,
+      'data-key': p.key,
+      title: p.rounds ? `Default duration: ${p.rounds} rounds` : '',
+      onclick: () => togglePreset(p),
+    }, `${p.emoji} ${p.name}`, p.rounds ? h('small', {}, ` ${p.rounds}r`) : null, p.color ? h('span', { class: `swatch tint-${p.color}`, title: 'Changes a bar color' }) : null);
+  }
+  $('#cond-official').replaceChildren(...PRESETS.filter((p) => p.official).map(presetButton));
+  $('#cond-common').replaceChildren(...PRESETS.filter((p) => !p.official).map(presetButton));
+
+  async function condAct(event, payload) {
+    const res = await emit(event, payload);
+    $('#cond-error').textContent = res.ok ? '' : res.error;
+    return res;
+  }
+
+  function togglePreset(p) {
+    const c = byId(condFor);
+    if (!c) return;
+    const active = (c.conditions || []).find((k) => k.key === p.key);
+    // tapping an active condition removes it (Exhaustion goes up a level instead)
+    if (active && !p.levels && active.canRemove) return condAct('condition:remove', { id: c.id, condId: active.id });
+    const rounds = $('#cond-rounds').value;
+    return condAct('condition:add', { id: c.id, condition: { preset: p.key, rounds: rounds || undefined } });
+  }
+
+  function openConditions(id) {
+    condFor = id;
+    $('#cond-error').textContent = '';
+    $('#cond-rounds').value = '';
+    condForm.reset();
+    syncCondForm();
+    $('#cond-secret-field').hidden = !isDm();
+    renderConditionsDialog();
+    condDlg.showModal();
+  }
+  $('#btn-cond-close').addEventListener('click', () => condDlg.close());
+
+  function renderConditionsDialog() {
+    if (!condDlg.open || !condFor) return;
+    const c = byId(condFor);
+    if (!c) { condDlg.close(); return; }
+    $('#cond-title').textContent = `✨ Effects on ${c.name}`;
+    const list = c.conditions || [];
+    $('#cond-active').replaceChildren(...(list.length ? list.map((k) => {
+      const preset = PRESETS.find((p) => p.key === k.key);
+      return h('div', { class: `cond-line cond-${k.kind}` },
+        h('span', { class: 'cond-line-name' }, condText(k)),
+        k.rounds ? h('span', { class: 'muted small' }, `⏳ ${k.rounds} round${k.rounds > 1 ? 's' : ''} left`) : h('span', { class: 'muted small' }, 'until removed'),
+        k.color ? h('span', { class: `swatch tint-${k.color}`, title: `Colors the ${k.bar.replace('stat:', '')} bar` }) : null,
+        k.secret ? h('span', { class: 'small' }, '🤫 secret') : null,
+        h('span', { class: 'spacer' }),
+        preset && preset.levels && k.canRemove ? h('button', { class: 'btn ghost tiny', 'aria-label': 'Lower level', onclick: () => condAct('condition:level', { id: c.id, condId: k.id, delta: -1 }) }, '−') : null,
+        preset && preset.levels ? h('button', { class: 'btn ghost tiny', 'aria-label': 'Raise level', onclick: () => condAct('condition:level', { id: c.id, condId: k.id, delta: 1 }) }, '+') : null,
+        k.canRemove ? h('button', { class: 'btn ghost tiny', 'aria-label': `Remove ${k.name}`, onclick: () => condAct('condition:remove', { id: c.id, condId: k.id }) }, '✕') : null);
+    }) : [h('p', { class: 'muted small' }, 'No effects yet. Tap one below to add it.')]));
+    for (const b of condDlg.querySelectorAll('.cond-preset')) {
+      b.classList.toggle('active', list.some((k) => k.key === b.dataset.key));
+    }
+  }
+
+  function syncCondForm() {
+    const f = condForm.elements;
+    condForm.querySelector('.cond-bar-field').hidden = !f.color.value;
+    condForm.querySelector('.cond-stat-field').hidden = !f.color.value || f.bar.value !== 'stat';
+  }
+  condForm.elements.color.addEventListener('change', syncCondForm);
+  condForm.elements.bar.addEventListener('change', syncCondForm);
+
+  condForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = condForm.elements;
+    const bar = f.bar.value === 'stat' ? `stat:${f.stat.value.trim()}` : f.bar.value;
+    const res = await condAct('condition:add', {
+      id: condFor,
+      condition: {
+        name: f.name.value,
+        emoji: f.emoji.value,
+        kind: f.kind.value,
+        color: f.color.value,
+        bar,
+        rounds: $('#cond-rounds').value || undefined,
+        secret: f.secret.checked,
+      },
+    });
+    if (res.ok) { condForm.reset(); syncCondForm(); }
+  });
 
   $('#btn-roll').addEventListener('click', () => {
     const bonus = Number(form.elements.initBonus.value) || 0;
@@ -886,7 +1092,20 @@
     toast(`🎲 d20 = ${roll}${bonus ? ` ${bonus > 0 ? '+' : '−'} ${Math.abs(bonus)}` : ''} → ${roll + bonus}`);
   });
 
-  function openEditor(type, c = null) {
+  function fillLeaderSelect(selfId, selected) {
+    const sel = form.elements.leader;
+    const options = state.combatants.filter((x) => x.type === 'enemy' && !x.lair && x.id !== selfId);
+    sel.replaceChildren(
+      h('option', { value: '' }, '— nobody (independent) —'),
+      ...options.map((x) => h('option', { value: x.id, selected: x.id === selected }, `${x.boss ? '👑 ' : ''}${x.name}${x.defeated ? ' (defeated)' : ''}`)));
+    syncSummonOpts();
+  }
+  function syncSummonOpts() {
+    form.querySelector('.summon-opts').hidden = !form.elements.leader.value;
+  }
+  form.elements.leader.addEventListener('change', syncSummonOpts);
+
+  function openEditor(type, c = null, preset = {}) {
     editing = { type, id: c ? c.id : null };
     form.reset();
     $('#editor-error').textContent = '';
@@ -914,9 +1133,22 @@
       f.initiative.value = c.initiative;
       f.initBonus.value = c.initBonus || 0;
       f.hidden.checked = Boolean(c.hidden);
+      f.boss.checked = Boolean(c.boss);
+      f.onLeaderDeath.value = c.onLeaderDeath || 'dies';
+      f.followLeader.checked = Boolean(c.followLeader);
     } else {
       f.name.value = type === 'pc' ? (state ? state.you.name : '') : '';
       f.hp.value = '';
+      f.boss.checked = Boolean(preset.boss);
+      f.followLeader.checked = Boolean(preset.followLeader);
+    }
+    if (type === 'enemy') {
+      fillLeaderSelect(c ? c.id : null, c ? c.leader : preset.leader);
+      if (!c && preset.leader) {
+        const leader = byId(preset.leader);
+        $('#editor-title').textContent = `Summon for ${leader ? leader.name : 'leader'}`;
+      }
+      if (!c && preset.boss) $('#editor-title').textContent = 'Add a boss';
     }
     $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s)));
     $('#btn-delete').hidden = !c;
@@ -960,6 +1192,14 @@
       hidden: editing.type === 'enemy' ? f.hidden.checked : undefined,
       stats,
     };
+    if (editing.type === 'enemy') {
+      Object.assign(combatant, {
+        boss: f.boss.checked,
+        leader: f.leader.value || null,
+        onLeaderDeath: f.onLeaderDeath.value,
+        followLeader: f.followLeader.checked,
+      });
+    }
     const res = await emit('combatant:save', { combatant });
     if (!res.ok) { $('#editor-error').textContent = res.error; return; }
     dlg.close();

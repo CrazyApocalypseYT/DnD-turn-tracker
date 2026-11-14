@@ -83,6 +83,7 @@ const EVENTS = [
   'room:create', 'room:join', 'room:leave',
   'combatant:save', 'combatant:remove', 'hp:change',
   'combat:start', 'combat:end', 'turn:next', 'turn:prev', 'turn:set', 'settings:update', 'stat:adjust',
+  'condition:add', 'condition:remove', 'condition:level',
 ];
 
 io.on('connection', (socket) => {

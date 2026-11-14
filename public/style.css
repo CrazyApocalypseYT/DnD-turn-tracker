@@ -397,3 +397,113 @@ button.linkish { background: none; border: 0; color: var(--text); font: inherit;
   .d-top, .d-sides, .d-bottom { grid-template-columns: 1fr; }
   .d-join { justify-content: center; }
 }
+
+/* ======================= conditions (buffs / debuffs) ======================= */
+:root {
+  --tint-green: #3fd16b;
+  --tint-red: #ff4d4d;
+  --tint-orange: #ff9a3c;
+  --tint-yellow: #ffd84d;
+  --tint-blue: #4f8dff;
+  --tint-cyan: #3fe0e8;
+  --tint-purple: #b06bff;
+  --tint-pink: #ff6fae;
+  --tint-gray: #9aa0a6;
+  --buff: #3fbf6a;
+  --debuff: #e25b5b;
+}
+.tint-green { --tint: var(--tint-green); }
+.tint-red { --tint: var(--tint-red); }
+.tint-orange { --tint: var(--tint-orange); }
+.tint-yellow { --tint: var(--tint-yellow); }
+.tint-blue { --tint: var(--tint-blue); }
+.tint-cyan { --tint: var(--tint-cyan); }
+.tint-purple { --tint: var(--tint-purple); }
+.tint-pink { --tint: var(--tint-pink); }
+.tint-gray { --tint: var(--tint-gray); }
+/* a bar recolored by an effect: the effect's color with moving stripes, so it never looks like plain low HP */
+.hpbar > div.tinted, .resbar > div.tinted {
+  background-color: var(--tint);
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.28) 0 6px, transparent 6px 12px);
+  background-size: 17px 17px;
+  animation: stripes 1.2s linear infinite;
+  box-shadow: 0 0 8px var(--tint);
+}
+@keyframes stripes { to { background-position: 17px 0; } }
+@media (prefers-reduced-motion: reduce) { .hpbar > div.tinted, .resbar > div.tinted { animation: none; } }
+
+.c-conds-row { grid-column: 1 / -1; }
+.c-conds { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.cond {
+  font: inherit; font-size: 0.78rem; font-weight: 700; color: var(--text);
+  padding: 0.12rem 0.55rem; border-radius: 999px; border: 1px solid var(--line); background: #15121b; cursor: default;
+}
+button.cond { cursor: pointer; }
+.cond-buff { border-color: var(--buff); background: rgba(63, 191, 106, 0.16); }
+.cond-debuff { border-color: var(--debuff); background: rgba(226, 91, 91, 0.16); }
+.cond-neutral { border-color: #6b7cff; background: rgba(108, 140, 255, 0.14); }
+.cond-secret { border-style: dashed; }
+.cond small { font-weight: 600; opacity: 0.85; }
+.c-conds.compact .cond { padding: 0.05rem 0.35rem; font-size: 0.9rem; }
+
+/* effects dialog */
+#cond-dialog { width: min(640px, calc(100vw - 1.5rem)); }
+.cond-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.cond-head h2 { margin: 0; }
+.cond-active { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.6rem 0; }
+.cond-line { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.35rem 0.5rem; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); }
+.cond-line.cond-buff { border-left: 4px solid var(--buff); }
+.cond-line.cond-debuff { border-left: 4px solid var(--debuff); }
+.cond-line-name { font-weight: 700; }
+.cond-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.4rem 0 0.8rem; }
+.cond-preset {
+  font: inherit; font-size: 0.85rem; font-weight: 600; color: var(--text); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.35rem 0.6rem; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2);
+}
+.cond-preset.cond-buff { border-color: #2f7d4a; }
+.cond-preset.cond-debuff { border-color: #7d2f3a; }
+.cond-preset.active { outline: 2px solid var(--accent); background: #3a2f1c; }
+.cond-preset small { color: var(--muted); }
+.swatch { display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 50%; background: var(--tint); box-shadow: 0 0 4px var(--tint); flex: none; }
+.cond-rounds input { max-width: 12rem; }
+.cond-custom { margin-top: 0.4rem; border: 1px solid var(--line); border-radius: 12px; padding: 0.6rem 0.8rem; }
+.cond-custom summary { cursor: pointer; font-weight: 700; margin-bottom: 0.4rem; }
+#cond-dialog h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+/* ======================= bosses, summons, lair ======================= */
+.boss-bar { display: flex; flex-direction: column; gap: 0.45rem; width: 100%; }
+.turn-banner .boss-bar { flex-basis: 100%; margin-top: 0.2rem; }
+.boss {
+  background: linear-gradient(90deg, rgba(217, 164, 65, 0.22), rgba(226, 91, 91, 0.12));
+  border: 1px solid #a8742a; border-radius: 12px; padding: 0.45rem 0.7rem;
+}
+.boss.is-now { box-shadow: 0 0 0 2px var(--accent), 0 0 18px rgba(217, 164, 65, 0.45); }
+.boss.defeated { opacity: 0.55; }
+.boss.defeated .boss-name { text-decoration: line-through; }
+.boss-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.3rem; }
+.boss-name { font-weight: 900; letter-spacing: 0.02em; color: #ffd98a; }
+.boss-hp { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
+.boss-minions { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
+.boss-track { height: 12px; }
+.boss.big { padding: 0.7rem 1rem; border-radius: 16px; }
+.boss.big .boss-name { font-size: clamp(1.3rem, 3vw, 2rem); }
+.boss.big .boss-hp { font-size: 1.2rem; }
+.boss.big .boss-track { height: 20px; }
+
+.badge.boss-b { background: linear-gradient(90deg, #d9a441, #f2c94c); color: #1d1606; }
+.card.boss { border-left-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(217, 164, 65, 0.6); }
+.card.summon { border-left-style: dotted; }
+.card.lair { border-left-color: #8a6bbf; background: #262036; }
+.lair-row { grid-column: 1 / -1; }
+.d-card.boss { border-color: rgba(217, 164, 65, 0.7); }
+.d-card.summon { border-left-style: dotted; }
+.d-card.lair { border-left-color: #8a6bbf; }
+.chip-conds { font-size: 0.9rem; }
+.dm-quick { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
+
+/* enemy editor: boss + summon settings */
+.boss-toggle span { font-weight: 700; }
+.summon-box { border: 1px dashed var(--line); border-radius: 12px; padding: 0.6rem 0.7rem 0.1rem; margin-bottom: 0.7rem; }
+.summon-opts { display: flex; gap: 0.8rem; align-items: center; flex-wrap: wrap; }
+.summon-opts .field { margin-bottom: 0.5rem; }

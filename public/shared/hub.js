@@ -90,6 +90,15 @@
       'stat:adjust'(conn, p, room) {
         game.adjustStat(room, conn.clientId, p);
       },
+      'condition:add'(conn, p, room) {
+        game.addCondition(room, conn.clientId, p);
+      },
+      'condition:remove'(conn, p, room) {
+        game.removeCondition(room, conn.clientId, p);
+      },
+      'condition:level'(conn, p, room) {
+        game.conditionLevel(room, conn.clientId, p);
+      },
     };
 
     /**
