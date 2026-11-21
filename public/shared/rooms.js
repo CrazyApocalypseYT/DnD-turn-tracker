@@ -447,10 +447,10 @@ function saveCombatant(room, clientId, input) {
     throw new GameError(`Each player can have up to ${LIMITS.companions} friendly NPCs.`);
   }
   if (room.combatants.length >= LIMITS.combatants) throw new GameError('Too many creatures in this room.');
-  const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f, conditions: [] };
+  const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f, conditions: [], reserve: type === 'companion' && Boolean(input.reserve) };
   room.combatants.push(c);
   joinRollQueue(room, member);
-  addLog(room, type === 'pc' ? `${member.name} added the character ${c.name}.` : `${member.name} brought along ${c.name} (friendly NPC).`);
+  addLog(room, type === 'pc' ? `${member.name} added the character ${c.name}.` : `${member.name} brought along ${c.name} (friendly NPC${c.reserve ? ', in reserve' : ''}).`);
   touch(room);
   return [c];
 }
@@ -529,6 +529,34 @@ function onDefeated(room, fallen, seen = new Set()) {
     room.combat.turnId = null;
     advance(room, +1);
   }
+}
+
+/**
+ * Friendly NPCs can wait in reserve: they stay in the party but are skipped
+ * in the turn order and the initiative round until they join the battle.
+ * Owner or DM. A creature joining a running fight keeps its last initiative,
+ * or goes last until its owner enters a roll.
+ */
+function setReserve(room, clientId, { id, reserve } = {}) {
+  const member = getMember(room, clientId);
+  const c = findCombatant(room, id);
+  if (c.type !== 'companion') throw new GameError('Only friendly NPCs can wait in reserve.');
+  if (!canControl(room, member, c)) throw new GameError('Only its owner or the DM can do that.');
+  const next = Boolean(reserve);
+  if (Boolean(c.reserve) === next) return c;
+  c.reserve = next;
+  if (next) {
+    addLog(room, `💤 ${c.name} stays back in reserve.`);
+    if (room.combat.active && room.combat.turnId === c.id) advance(room, +1); // it was its turn: pass it on
+    if (room.combat.phase === 'rolling') advanceRollQueue(room);
+  } else {
+    addLog(room, `⚔️ ${c.name} joins the battle!`);
+    if (room.combat.phase === 'rolling') { c.initRoll = null; c.initiative = null; } // roll fresh for this fight
+    const owner = memberById(room, c.owner);
+    if (owner) joinRollQueue(room, owner);
+  }
+  touch(room);
+  return c;
 }
 
 function removeCombatant(room, clientId, id) {
@@ -639,7 +667,7 @@ function sortedCombatants(room) {
 
 /** Creatures that actually get a turn: visible, and enemies must be alive. */
 function eligible(room) {
-  return sortedCombatants(room).filter((c) => !c.hidden && !(c.type === 'enemy' && c.hp <= 0));
+  return sortedCombatants(room).filter((c) => !c.hidden && !c.reserve && !(c.type === 'enemy' && c.hp <= 0));
 }
 
 function setCurrent(room, c, { refill = true } = {}) {
@@ -695,7 +723,7 @@ function requireDm(member) {
 
 /** Creatures that roll their own initiative (not lair actions or summons that follow their leader). */
 function needsRoll(c) {
-  return !c.lair && !(c.followLeader && c.leader);
+  return !c.lair && !c.reserve && !(c.followLeader && c.leader);
 }
 
 /** The creatures a member rolls for: the DM rolls for every enemy. */
@@ -1102,6 +1130,7 @@ function viewFor(room, clientId, isOnline = () => false) {
           .filter((k) => isDm || !k.secret)
           .map((k) => ({ ...k, canRemove: canRemoveCondition(me, c, k) })),
         hidden: Boolean(c.hidden),
+        reserve: Boolean(c.reserve),
         hp: secret ? null : c.hp,
         hpMax: secret ? null : c.hpMax,
         hpPct: Math.round((c.hp / c.hpMax) * 100),
@@ -1171,6 +1200,7 @@ return {
   removeCondition,
   setInitiative,
   skipRoller,
+  setReserve,
   setMap,
   addStroke,
   undoStroke,

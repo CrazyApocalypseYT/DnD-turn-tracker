@@ -86,6 +86,9 @@
         game.setInitiative(room, conn.clientId, p);
       },
       'initiative:skip': (conn, _p, room) => game.skipRoller(room, conn.clientId),
+      'combatant:reserve'(conn, p, room) {
+        game.setReserve(room, conn.clientId, p);
+      },
       'map:set': (conn, p, room) => game.setMap(room, conn.clientId, p),
       'map:stroke'(conn, p, room) {
         game.addStroke(room, conn.clientId, p);

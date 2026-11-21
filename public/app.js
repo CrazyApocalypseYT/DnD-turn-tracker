@@ -766,6 +766,7 @@
       } else if (c.mine) {
         actions.push(...quickHp(c, { allowDamage: true, allowHeal: true }));
         actions.push(h('button', { class: 'btn ghost small', onclick: () => openEditor(c.type, c) }, '✏️ Edit'));
+        if (c.type === 'companion') actions.push(reserveButton(c));
       } else if (isScreen()) {
         // the table screen only displays
       } else if (!dm && c.type === 'enemy' && !c.defeated) {
@@ -784,7 +785,7 @@
       }
 
       const card = h('li', {
-        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
+        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon', c.reserve && 'reserve'].filter(Boolean).join(' '),
         'data-id': c.id,
       },
         c.mine && c.needsRoll && !isScreen()
@@ -795,6 +796,7 @@
             h('span', { class: 'c-name' }, c.lair ? `🏰 ${c.name}` : c.name),
             c.boss ? h('span', { class: 'badge boss-b' }, '👑 Boss') : h('span', { class: `badge ${c.type}` }, typeLabel),
             c.hidden && h('span', { class: 'badge hidden-b' }, 'Hidden'),
+            c.reserve && h('span', { class: 'badge reserve-b', title: 'Not in the turn order until it joins the battle' }, '💤 Reserve'),
             c.defeated && h('span', { class: 'badge' }, c.type === 'enemy' ? '💀 Defeated' : '0 HP')),
           sub.length ? h('div', { class: 'c-sub' }, sub.join(' · ')) : null),
         c.lair ? h('span', {}) : h('div', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC')),
@@ -814,6 +816,25 @@
     if (cur && state.yourTurn) cur.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
+  /** 💤 Reserve / ⚔️ Join battle for friendly NPCs (owner or DM). */
+  function reserveButton(c) {
+    if (c.type !== 'companion' || !c.mine) return null;
+    return h('button', {
+      class: `btn small ${c.reserve ? 'accent' : 'ghost'}`,
+      title: c.reserve ? 'Bring it into the fight' : 'Keep it out of the turn order until needed',
+      onclick: () => toggleReserve(c),
+    }, c.reserve ? '⚔️ Join battle' : '💤 Reserve');
+  }
+
+  async function toggleReserve(c) {
+    const res = await act('combatant:reserve', { id: c.id, reserve: !c.reserve });
+    if (!res.ok || !c.reserve) return;
+    // joining a running fight without an initiative yet: ask the owner for the roll
+    // (the reply can arrive before the new room state, so don't rely on its reserve/needsRoll flags here)
+    const fresh = byId(c.id);
+    if (state.combat.active && fresh && fresh.initiative === null) openInitiative([c.id]);
+  }
+
   function miniCard(c, emptyText, emptyBtn, type) {
     if (!c) {
       return h('div', { class: 'mini' },
@@ -824,8 +845,10 @@
     return h('div', { class: 'mini' },
       h('div', {},
         h('div', {}, h('strong', {}, c.name), ' ', h('span', { class: 'muted' }, [c.cls, c.level ? `Lv ${c.level}` : ''].filter(Boolean).join(' '))),
-        h('div', { class: 'muted' }, hp)),
-      h('button', { class: 'btn ghost small', onclick: () => openEditor(type, c) }, '✏️ Edit'));
+        h('div', { class: 'muted' }, c.reserve ? `💤 In reserve · ${hp}` : hp)),
+      h('span', { class: 'mini-actions' },
+        reserveButton(c),
+        h('button', { class: 'btn ghost small', onclick: () => openEditor(type, c) }, '✏️ Edit')));
   }
 
   function renderPlayerPanel() {
@@ -859,7 +882,7 @@
   /** What gets saved of a creature: its sheet, not its current HP or effects. */
   function snapshot(c) {
     return {
-      name: c.name, cls: c.cls || '', level: c.level ?? 1, hpMax: c.hpMax, ac: c.ac, initBonus: c.initBonus || 0,
+      name: c.name, cls: c.cls || '', level: c.level ?? 1, hpMax: c.hpMax, ac: c.ac, initBonus: c.initBonus || 0, reserve: Boolean(c.reserve),
       stats: (c.stats || []).map((st) => (typeof st.max === 'number' ? { key: st.key, max: st.max, value: st.max, color: st.color, refill: st.refill } : { key: st.key, value: st.value })),
     };
   }
@@ -1254,7 +1277,7 @@
   /* table display (tablet battle board)                           */
   /* ------------------------------------------------------------ */
   const isAlly = (c) => c.type !== 'enemy';
-  const actsInRound = (c) => !c.hidden && !(c.type === 'enemy' && c.defeated);
+  const actsInRound = (c) => !c.hidden && !c.reserve && !(c.type === 'enemy' && c.defeated);
 
   function sideLabel(c) {
     if (c.lair) return 'Lair actions';
@@ -1302,7 +1325,7 @@
 
   function dCard(c, tag) {
     return h('div', {
-      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
+      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon', c.reserve && 'reserve'].filter(Boolean).join(' '),
     },
       h('div', { class: 'd-card-head' },
         h('span', { class: 'init' }, fmtInit(c.initiative)),
@@ -1311,6 +1334,7 @@
           h('div', { class: 'c-sub' }, [sideLabel(c), c.leaderName ? `🔗 ${c.leaderName}` : '', c.cls, c.level && c.type !== 'enemy' ? `Lv ${c.level}` : ''].filter(Boolean).join(' · '))),
         tag === 'now' && h('span', { class: 'd-tag now' }, 'NOW'),
         tag === 'next' && h('span', { class: 'd-tag next' }, 'NEXT'),
+        c.reserve && h('span', { class: 'd-tag' }, '💤 Reserve'),
         c.defeated && h('span', { class: 'd-tag' }, c.type === 'enemy' ? '💀' : '0 HP'),
         c.lair ? null : h('span', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC'))),
       conditionChips(c),
@@ -1378,7 +1402,7 @@
     // initiative strip
     const strip = $('#d-strip');
     strip.replaceChildren(...state.combatants.map((c) => h('li', {
-      class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
+      class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.type, c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated', c.reserve && 'reserve'].filter(Boolean).join(' '),
     }, h('b', {}, fmtInit(c.initiative)), `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`, (c.conditions || []).length ? h('span', { class: 'chip-conds' }, c.conditions.map((k) => k.emoji).join('')) : null)));
     const curChip = strip.querySelector('.is-now');
     if (curChip) curChip.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
@@ -1409,7 +1433,8 @@
       })
       : [h('p', { class: 'muted' }, 'No enemies… yet.')]));
     const fighters = enemyList.filter((c) => !c.lair);
-    $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated).length} standing` : '';
+    const benched = allies.filter((c) => c.reserve).length;
+    $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated && !c.reserve).length} standing${benched ? ` · 💤 ${benched} in reserve` : ''}` : '';
     $('#d-enemies-count').textContent = fighters.length ? `${fighters.filter((c) => !c.defeated).length} left` : '';
     renderBossBar($('#d-boss'), { big: true });
 
@@ -1772,7 +1797,7 @@
 
     for (const el of form.querySelectorAll('[data-for]')) {
       const tags = el.dataset.for.split(' ');
-      el.hidden = !(tags.includes(type) || (type === 'enemy' && !c && tags.includes('enemy-new')));
+      el.hidden = !(tags.includes(type) || (!c && tags.includes(`${type}-new`)));
     }
 
     const f = form.elements;
@@ -1844,6 +1869,7 @@
       initBonus: f.initBonus.value,
       count: f.count.value,
       hidden: editing.type === 'enemy' ? f.hidden.checked : undefined,
+      reserve: editing.type === 'companion' && !editing.id ? f.reserve.checked : undefined,
       stats,
     };
     if (editing.type === 'enemy') {

@@ -594,3 +594,10 @@ button.badge.host { font: inherit; font-size: 0.75rem; font-weight: 700; color: 
 .music-chip button + button { border-left: 1px solid var(--line); color: var(--muted); }
 .music-chip.playing { border-color: var(--accent); }
 @media (max-width: 520px) { .music-form { grid-template-columns: minmax(0, 1fr) auto auto; } .music-form #music-name { grid-column: 1 / -1; grid-row: 2; } }
+
+/* ======================= friendly NPCs in reserve ======================= */
+.card.reserve, .d-card.reserve { opacity: 0.6; border-left-style: dashed; }
+.card.reserve:hover { opacity: 0.85; }
+.badge.reserve-b { background: #3a3550; color: #d6d0ff; }
+.chip-turn.reserve { opacity: 0.45; border-style: dotted; border-color: var(--line); }
+.mini-actions { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: flex-end; }

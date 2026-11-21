@@ -462,3 +462,37 @@ test('map: DM or table display set a link and draw; players only look', () => {
   for (let i = 0; i < 230; i++) g.addStroke(room, 'dm-secret', { points: [[0, 0], [1, 1]] });
   assert.equal(room.map.strokes.length, 200, 'oldest strokes are dropped past the limit');
 });
+
+test('friendly NPCs can wait in reserve: no turns, no initiative roll, until they join the battle', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', { type: 'pc', name: 'Aria', hpMax: 20, initiative: 15 });
+  const [wolf] = g.saveCombatant(room, 'p1', { type: 'companion', name: 'Wolf', hpMax: 11, initiative: 18, reserve: true });
+  const [bo] = g.saveCombatant(room, 'p2', { type: 'pc', name: 'Bo', hpMax: 20, initiative: 10 });
+  assert.equal(wolf.reserve, true);
+  assert.throws(() => g.setReserve(room, 'p1', { id: aria.id, reserve: true }), /Only friendly NPCs/);
+  assert.throws(() => g.setReserve(room, 'p2', { id: wolf.id, reserve: false }), /owner or the DM/);
+  assert.equal(g.viewFor(room, 'p2').combatants.find((c) => c.name === 'Wolf').reserve, true, 'everyone sees it is in reserve');
+
+  // turns skip the reserve
+  g.startCombat(room, 'dm-secret');
+  assert.equal(room.combat.turnId, aria.id, 'the wolf (18) waits in reserve');
+  g.nextTurn(room, 'p1');
+  assert.equal(room.combat.turnId, bo.id);
+  // the wolf joins mid-fight: it gets turns again (it already has initiative 18)
+  g.setReserve(room, 'p1', { id: wolf.id, reserve: false });
+  g.nextTurn(room, 'p2');
+  assert.equal(room.combat.turnId, wolf.id, 'new round: wolf (18) acts first');
+  // sent back to reserve on its own turn: the turn passes on
+  g.setReserve(room, 'dm-secret', { id: wolf.id, reserve: true });
+  assert.equal(room.combat.turnId, aria.id);
+  assert.ok(room.log.some((l) => l.text === '⚔️ Wolf joins the battle!'));
+
+  // initiative round: reserve NPCs are not asked to roll
+  g.endCombat(room, 'dm-secret');
+  g.startCombat(room, 'dm-secret', { roll: true });
+  g.setInitiative(room, 'p1', { rolls: [{ id: aria.id, roll: 12 }] });
+  assert.deepEqual(g.viewFor(room, 'p1').combat.rollers.map((r) => r.name), ['Bob'], 'Alice is done without rolling for the wolf');
+  // joining during the initiative round puts the owner back in the queue
+  g.setReserve(room, 'p1', { id: wolf.id, reserve: false });
+  assert.deepEqual(g.viewFor(room, 'p1').combat.rollers.map((r) => r.name), ['Bob', 'Alice']);
+});
