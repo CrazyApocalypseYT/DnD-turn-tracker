@@ -25,7 +25,7 @@ When it's your turn, **your device** (and only yours) plays a chime and the scre
 - **🗺️ Map with a DM pen** – out of combat, the DM pastes a link to a map (a website or an image) and it appears in a big box on the table display (and on players' phones), with **full screen**. Turn on **✏️ Pen** to draw on it (colors, sizes, undo, clear); drawings show on every screen. Some websites refuse to be shown inside other pages – use a direct image link or the site's "embed" link. The map box is 16:9 on every device so drawings line up; on websites whose layout changes with screen size they may still shift a little.
 - **Three kinds of device**
   - **DM** – runs enemies, turns and HP.
-  - **Player** – their character, one friendly NPC, deal damage, turn alerts.
+  - **Player** – their character, up to 3 friendly NPCs, saved characters, deal damage, turn alerts.
   - **Table display** (made for a tablet) – a big battle board for everyone to look at: *now* playing (ally or enemy, HP and bars), *up next*, an initiative strip, and separate **🛡️ Allies** / **⚔️ Enemies** columns, plus the last events and a QR code to join. Choose *Host on this tablet (table display)* or *Join as table display* in the lobby. It never sees secrets (hidden enemies, enemy HP/AC unless the DM reveals them).
 - **Your-turn alert** – chime (Web Audio, no files), green flash, green screen while it's your turn, vibration where the browser supports it. The screen is kept awake (Wake Lock) where supported.
 - The player whose turn it is can press **End my turn**; the DM can go next/previous or give the turn to anyone.
