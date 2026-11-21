@@ -29,7 +29,7 @@
       try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; }
     },
     set(k, v) {
-      try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ }
+      try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; /* private mode or full */ }
     },
     del(k) {
       try { localStorage.removeItem(k); } catch { /* ignore */ }
@@ -149,7 +149,7 @@
       saveHostedRoom(room);
       session = { ...session, host: true };
       store.set('dnd.session', session);
-      if (old) old.close();
+      if (old) { if (old.retire) old.retire(); else old.close(); } // lets the "got it" reach the old host
       const res = await net.restore(room, session.name);
       if (res.ok) toast('📡 This device is now hosting the room.');
       else toast(res.error, true);
@@ -166,7 +166,9 @@
   };
 
   function saveHostedRoom(room) {
-    store.set('dnd.hostRoom', room);
+    if (store.set('dnd.hostRoom', room)) return;
+    // the device's storage is full (a big map picture): keep the room, drop the picture
+    if (room.mapImage) store.set('dnd.hostRoom', { ...room, mapImage: null });
   }
 
   async function getSocketNet() {
@@ -1057,8 +1059,9 @@
 
   function renderMusic() {
     const dm = isDm();
-    $('#music-dock').hidden = !dm;
-    if (!dm) stopMusic();
+    const canPlay = dm || isScreen(); // the DM's device and the table display (it usually has the speaker)
+    $('#music-dock').hidden = !canPlay;
+    if (!canPlay) stopMusic();
     $('#dm-toolbar').hidden = !dm;
     $('#tb-music').setAttribute('aria-expanded', String(!$('#music-dock').classList.contains('collapsed')));
   }
@@ -1146,6 +1149,70 @@
   /* ------------------------------------------------------------ */
   const PEN_COLORS = { red: '#ff4d4d', yellow: '#ffd84d', white: '#ffffff', cyan: '#3fe0e8', green: '#3fd16b', black: '#111111' };
 
+  /* ---------- uploaded map images ---------- */
+  const mapImages = new Map(); // imageId -> data: URL
+  const mapImageLoads = new Map();
+
+  /** Download an uploaded map picture in chunks (once per device), then redraw. */
+  function loadMapImage(id) {
+    if (!id || mapImages.has(id) || mapImageLoads.has(id)) return;
+    const job = (async () => {
+      let data = '';
+      let total = 1;
+      for (let i = 0; i < total; i++) {
+        let res = null;
+        for (let attempt = 0; attempt < 3 && !(res && res.ok); attempt++) res = await emit('map:image', { id, index: i });
+        if (!res || !res.ok) { console.warn('Map image download stopped:', res && res.error); return; } // e.g. the map changed meanwhile
+        total = res.total;
+        data += res.data;
+      }
+      mapImages.set(id, data);
+      if (state) render();
+    })().finally(() => mapImageLoads.delete(id));
+    mapImageLoads.set(id, job);
+  }
+
+  /** Shrink a picture to at most 2400 px and JPEG, so it travels quickly between devices. */
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        let q = 0.85;
+        let data = canvas.toDataURL('image/jpeg', q);
+        while (data.length > 4.5 * 1024 * 1024 && q > 0.4) { q -= 0.15; data = canvas.toDataURL('image/jpeg', q); }
+        resolve(data);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not an image this browser can open.')); };
+      img.src = url;
+    });
+  }
+
+  async function uploadMapImage(file) {
+    if (!file) return;
+    let data;
+    try { data = await shrinkImage(file); } catch (err) { toast(err.message, true); return; }
+    const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const size = window.DndRooms.MAP_IMAGE.chunk;
+    const total = Math.ceil(data.length / size);
+    mapImages.set(id, data); // no need to download our own picture again
+    for (let i = 0; i < total; i++) {
+      toast(`📷 Sending the map… ${Math.round((i / total) * 100)}%`);
+      const res = await emit('map:upload', { id, index: i, total, data: data.slice(i * size, (i + 1) * size) });
+      if (!res.ok) { toast(res.error, true); return; }
+    }
+    toast('🗺️ Map image shared.');
+  }
+
   /** A 16:9 map box (website or image) with a drawing layer on top. */
   function createMapView() {
     let pen = false;
@@ -1172,7 +1239,9 @@
       h('button', { type: 'button', class: 'btn ghost small', title: 'Clear all drawings', onclick: () => { if (confirm('Clear all drawings?')) act('map:clear'); } }, '🗑'));
     const fsBtn = h('button', { type: 'button', class: 'btn ghost small', title: 'Full screen' }, '⛶ Full screen');
     const tools = h('div', { class: 'map-tools' }, fsBtn, drawTools);
-    const note = h('p', { class: 'muted tiny-text map-note' }, 'Blank box? That website doesn\'t allow being shown inside other pages – use a direct image link or the site\'s "embed" link.');
+    const openLink = h('a', { class: 'btn ghost small', target: '_blank', rel: 'noopener noreferrer', title: 'Open the website in a normal browser tab on this device' }, '↗ Open site');
+    tools.append(openLink);
+    const note = h('p', { class: 'muted tiny-text map-note' }, 'Blank box or an error? Many map websites (e.g. Map Genie) don\'t allow being shown inside other apps – the browser blocks it. Take a screenshot of the map and use 📷 Upload map image instead: the pen works on it. (↗ Open site opens the website in a normal tab; on the table display that would pause the room, so use it on the DM\'s phone.)');
     const wrap = h('div', { class: 'map-wrap' }, stage, tools, note);
 
     penBtn.addEventListener('click', () => {
@@ -1263,13 +1332,24 @@
       canDraw = opts.canDraw;
       drawTools.hidden = !canDraw;
       if (!canDraw && pen) penBtn.click();
-      if (shownUrl !== `${map.kind}|${map.url}`) {
-        shownUrl = `${map.kind}|${map.url}`;
-        frame.replaceChildren(map.kind === 'image'
-          ? h('img', { src: map.url, alt: 'Map', referrerpolicy: 'no-referrer' })
-          : h('iframe', { src: map.url, title: 'Map', referrerpolicy: 'no-referrer', allow: 'fullscreen', loading: 'lazy' }));
+      const uploaded = map.kind === 'upload' ? mapImages.get(map.imageId) : null;
+      const key = map.kind === 'upload' ? `upload|${map.imageId}|${uploaded ? 'ready' : 'loading'}` : `${map.kind}|${map.url}`;
+      if (shownUrl !== key) {
+        shownUrl = key;
+        if (map.kind === 'upload') {
+          frame.replaceChildren(uploaded
+            ? h('img', { src: uploaded, alt: 'Map' })
+            : h('p', { class: 'map-loading' }, '🗺️ Loading the map…'));
+          if (!uploaded) loadMapImage(map.imageId);
+        } else {
+          frame.replaceChildren(map.kind === 'image'
+            ? h('img', { src: map.url, alt: 'Map', referrerpolicy: 'no-referrer' })
+            : h('iframe', { src: map.url, title: 'Map', referrerpolicy: 'no-referrer', allow: 'fullscreen', loading: 'lazy' }));
+        }
       }
-      note.hidden = map.kind === 'image';
+      note.hidden = map.kind !== 'page';
+      openLink.hidden = map.kind !== 'page';
+      if (map.kind === 'page') openLink.href = map.url;
       redraw();
     }
     return { el: wrap, update };
@@ -1289,24 +1369,33 @@
     const dm = isDm();
     const m = state.map || { url: '', strokes: [] };
     const fighting = state.combat.active || state.combat.phase === 'rolling';
-    const showPanel = !isScreen() && (dm ? dmMapOpen : Boolean(m.url && !fighting && playerMapHiddenFor !== m.url));
+    const mapKey = m.url || (m.kind === 'upload' && m.imageId) || '';
+    const showPanel = !isScreen() && (dm ? dmMapOpen : Boolean(mapKey && !fighting && playerMapHiddenFor !== mapKey));
     $('#tb-map').setAttribute('aria-expanded', String(dmMapOpen));
     $('#tb-map').classList.toggle('active', dmMapOpen);
     $('#map-panel').hidden = !showPanel;
     $('#map-form').hidden = !dm;
     $('#map-hint').hidden = !dm;
-    $('#map-panel-view').hidden = !m.url;
-    if (showPanel && m.url) panelMap.update(m, { canDraw: state.canMap });
+    $('#map-panel-view').hidden = !mapKey;
+    if (showPanel && mapKey) panelMap.update(m, { canDraw: state.canMap });
     if (dm && document.activeElement !== $('#map-url')) $('#map-url').value = m.url || '';
     // the table display always shows a shared map (with the DM's drawings), in and out of combat
-    const showDisplay = isScreen() && Boolean(m.url);
+    const showDisplay = isScreen() && Boolean(mapKey);
     $('#d-map').hidden = !showDisplay;
     if (showDisplay) displayMap.update(m, { canDraw: state.canMap });
   }
 
+  for (const sel of ['#map-file', '#display-map-file']) {
+    $(sel).addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      uploadMapImage(file);
+    });
+  }
+
   $('#btn-map-hide').addEventListener('click', () => {
     if (isDm()) dmMapOpen = false;
-    else playerMapHiddenFor = state.map && state.map.url;
+    else playerMapHiddenFor = state.map && (state.map.url || state.map.imageId);
     render();
   });
   // table display: set the map right from the tablet
@@ -1710,14 +1799,19 @@
   const libDlg = $('#lib-dialog');
   let srdMonsters = null;
 
+  let srdError = '';
   async function loadSrd() {
     if (srdMonsters) return srdMonsters;
     try {
-      const res = await fetch('data/srd-monsters.json');
-      srdMonsters = (await res.json()).monsters || [];
-    } catch {
-      srdMonsters = [];
-      toast('Could not load the SRD monster list.', true);
+      const res = await fetch('data/srd-monsters.json?v=1');
+      if (!res.ok) throw new Error(`the server answered ${res.status}`);
+      const list = (await res.json()).monsters;
+      if (!Array.isArray(list) || !list.length) throw new Error('the list is empty');
+      srdMonsters = list;
+      srdError = '';
+    } catch (err) {
+      srdError = `Couldn't load the SRD monster list (${err.message}). Check the connection and open the library again.`;
+      return []; // not cached: try again next time
     }
     return srdMonsters;
   }
@@ -1765,7 +1859,8 @@
     if (crMatch) items = items.filter((i) => i.cr !== undefined && crValue(i.cr) === crValue(crMatch[1]));
     else if (q) items = items.filter((i) => q.split(/\s+/).every((w) => i.search.includes(w)));
     const shown = items.slice(0, 80);
-    $('#lib-list').replaceChildren(...(shown.length ? shown.map((i) => h('div', { class: `lib-row ${i.kind}` },
+    const errorNote = src !== 'mine' && srdError ? h('p', { class: 'error' }, srdError) : null;
+    $('#lib-list').replaceChildren(...(errorNote ? [errorNote] : []), ...(shown.length ? shown.map((i) => h('div', { class: `lib-row ${i.kind}` },
       h('div', { class: 'lib-main' },
         h('div', { class: 'lib-name' }, i.kind === 'mine' ? `💾 ${i.name}` : i.name),
         h('div', { class: 'muted small' }, i.sub)),

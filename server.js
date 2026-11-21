@@ -84,7 +84,7 @@ const EVENTS = [
   'combatant:save', 'combatant:remove', 'hp:change',
   'combat:start', 'combat:end', 'turn:next', 'turn:prev', 'turn:set', 'settings:update', 'stat:adjust',
   'condition:add', 'condition:remove', 'condition:level',
-  'initiative:set', 'initiative:skip', 'combatant:reserve', 'map:set', 'map:stroke', 'map:draft', 'map:undo', 'map:clear',
+  'initiative:set', 'initiative:skip', 'combatant:reserve', 'map:set', 'map:stroke', 'map:draft', 'map:upload', 'map:image', 'map:undo', 'map:clear',
 ];
 
 io.on('connection', (socket) => {

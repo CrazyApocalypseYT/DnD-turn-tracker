@@ -1028,10 +1028,46 @@ function setMap(room, clientId, { url, kind } = {}) {
   if (!room.map) room.map = { url: '', kind: 'page', strokes: [] };
   room.map.url = u;
   room.map.kind = isImage ? 'image' : 'page';
+  room.map.imageId = null;
   room.map.strokes = [];
   room.map.draft = null;
+  room.mapImage = null;
   addLog(room, u ? `🗺️ ${member.name} shared a map.` : `🗺️ ${member.name} removed the map.`);
   touch(room);
+}
+
+const MAP_IMAGE = { maxChars: 6 * 1024 * 1024, chunk: 48000 };
+
+/** True when a map is shared: a link, or an uploaded image. */
+function hasMap(room) {
+  return Boolean(room.map && (room.map.url || (room.map.kind === 'upload' && room.map.imageId)));
+}
+
+/**
+ * Use an uploaded picture as the map (e.g. a screenshot of a map website
+ * that refuses to be shown inside other pages). `data` is a data: URL; it is
+ * kept apart from the room view and fetched by each device in chunks.
+ */
+function setMapImage(room, clientId, { id, data } = {}) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  const d = String(data || '');
+  if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(d)) throw new GameError('That file is not a supported image (PNG, JPEG, WebP or GIF).');
+  if (d.length > MAP_IMAGE.maxChars) throw new GameError('That image is too big – try a smaller one.');
+  const imageId = str(id, 40) || randomId(6);
+  room.mapImage = { id: imageId, data: d };
+  room.map = { url: '', kind: 'upload', imageId, strokes: [], draft: null };
+  addLog(room, `🗺️ ${member.name} shared a map image.`);
+  touch(room);
+}
+
+/** Any member: one chunk of the uploaded map image. */
+function mapImageChunk(room, clientId, { id, index } = {}) {
+  getMember(room, clientId);
+  if (!room.mapImage || room.mapImage.id !== id) throw new GameError('That map image is no longer shared.');
+  const total = Math.ceil(room.mapImage.data.length / MAP_IMAGE.chunk);
+  const i = int(index, 0, total - 1, 0);
+  return { data: room.mapImage.data.slice(i * MAP_IMAGE.chunk, (i + 1) * MAP_IMAGE.chunk), total };
 }
 
 function cleanPoints(points) {
@@ -1052,7 +1088,7 @@ function cleanPoints(points) {
 function addStroke(room, clientId, { color, width, points } = {}) {
   const member = getMember(room, clientId);
   requireMapper(member);
-  if (!room.map || !room.map.url) throw new GameError('Share a map first.');
+  if (!hasMap(room)) throw new GameError('Share a map first.');
   const clean = cleanPoints(points);
   room.map.draft = null;
   room.map.strokes.push({ id: randomId(4), color: MAP_COLORS.includes(color) ? color : 'red', width: int(width, 1, 3, 2), points: clean });
@@ -1068,7 +1104,7 @@ function addStroke(room, clientId, { color, width, points } = {}) {
 function setDraft(room, clientId, { color, width, points } = {}) {
   const member = getMember(room, clientId);
   requireMapper(member);
-  if (!room.map || !room.map.url) return;
+  if (!hasMap(room)) return;
   room.map.draft = points == null ? null : { color: MAP_COLORS.includes(color) ? color : 'red', width: int(width, 1, 3, 2), points: cleanPoints(points) };
 }
 
@@ -1184,7 +1220,7 @@ function viewFor(room, clientId, isOnline = () => false) {
     },
     yourRoll: room.combat.phase === 'rolling' && (room.combat.queue || [])[0] === me.id,
     map: room.map
-      ? { url: room.map.url, kind: room.map.kind, strokes: room.map.strokes, draft: room.map.draft || null }
+      ? { url: room.map.url, kind: room.map.kind, imageId: room.map.imageId || null, strokes: room.map.strokes, draft: room.map.draft || null }
       : { url: '', kind: 'page', strokes: [] },
     canMap: me.role === 'dm' || me.role === 'screen',
     yourTurn,
@@ -1223,6 +1259,9 @@ return {
   setMap,
   addStroke,
   setDraft,
+  setMapImage,
+  mapImageChunk,
+  MAP_IMAGE,
   undoStroke,
   clearStrokes,
   MAP_COLORS,

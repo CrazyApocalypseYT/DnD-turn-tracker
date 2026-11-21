@@ -42,10 +42,45 @@
     return (err && err.message) || 'Connection failed.';
   }
 
+  /*
+   * PeerJS's "json" channel silently drops any message of 16,300 bytes or more
+   * (and Firefox→Chrome links cut messages at 16 KB). Big messages – a large
+   * room's state, map pictures, a room being handed over – are therefore split
+   * into small parts here and put back together by the receiver.
+   * 2,500 characters stay under the limit even if every character had to be
+   * escaped or took several bytes.
+   */
+  const PART_CHARS = 2500;
+
   function safeSend(dc, msg) {
     try {
-      if (dc && dc.open) dc.send(msg);
+      if (!dc || !dc.open) return;
+      const text = JSON.stringify(msg);
+      if (text.length <= PART_CHARS) { dc.send(msg); return; }
+      const id = Math.random().toString(36).slice(2, 10);
+      const n = Math.ceil(text.length / PART_CHARS);
+      for (let i = 0; i < n; i++) dc.send({ t: 'part', id, i, n, d: text.slice(i * PART_CHARS, (i + 1) * PART_CHARS) });
     } catch { /* channel closed */ }
+  }
+
+  /** Per connection: returns whole messages, buffering 'part' messages until complete. */
+  function makeAssembler() {
+    const pending = new Map();
+    return (msg) => {
+      if (!msg || typeof msg !== 'object' || msg.t !== 'part') return msg;
+      const { id, i, n, d } = msg;
+      if (typeof id !== 'string' || !Number.isInteger(n) || n < 1 || n > 20000 || !Number.isInteger(i) || i < 0 || i >= n || typeof d !== 'string') return null;
+      let buf = pending.get(id);
+      if (!buf) {
+        if (pending.size > 50) pending.delete(pending.keys().next().value); // forget abandoned messages
+        buf = { parts: new Array(n), got: 0 };
+        pending.set(id, buf);
+      }
+      if (buf.parts[i] === undefined) { buf.parts[i] = d; buf.got++; }
+      if (buf.got < n) return null;
+      pending.delete(id);
+      try { return JSON.parse(buf.parts.join('')); } catch { return null; }
+    };
   }
 
   function loadScript(src) {
@@ -135,8 +170,16 @@
       const remote = entry && [...this.remotes].find((r) => r.conn && r.conn.clientId === entry[0] && r.dc.open);
       if (!remote) return { ok: false, error: 'That device is not connected right now.' };
       this.handingOver = true; // freeze the room: no more changes while it moves
-      safeSend(remote.dc, { t: 'handover', room: JSON.parse(JSON.stringify(room)) });
-      await new Promise((r) => setTimeout(r, 800)); // let the message arrive before we let go of the room code
+      // wait until the other device confirms it received the whole room (big rooms take a moment)
+      const confirmed = new Promise((resolve) => {
+        remote.onHandoverOk = () => resolve(true);
+        setTimeout(() => resolve(false), 60000);
+      });
+      safeSend(remote.dc, { t: 'handover', room: JSON.parse(JSON.stringify(room)) }); // split into parts if big
+      if (!(await confirmed)) {
+        this.handingOver = false;
+        return { ok: false, error: 'The other device did not confirm in time – nothing was moved. Try again.' };
+      }
       return { ok: true };
     }
 
@@ -238,8 +281,10 @@
         remote.conn = this.hub.connect((st) => safeSend(dc, { t: 'state', state: st }));
         this.remotes.add(remote);
       });
-      dc.on('data', (msg) => {
+      const assemble = makeAssembler();
+      dc.on('data', (raw) => {
         remote.lastSeen = Date.now();
+        const msg = assemble(raw);
         if (!remote.conn || !msg || typeof msg !== 'object') return;
         if (msg.t === 'req') {
           const res = this.handingOver
@@ -248,6 +293,8 @@
           safeSend(dc, { t: 'res', id: msg.id, res });
         } else if (msg.t === 'ping') {
           safeSend(dc, { t: 'pong' });
+        } else if (msg.t === 'handover-ok' && remote.onHandoverOk) {
+          remote.onHandoverOk();
         }
       });
       const drop = () => {
@@ -361,12 +408,17 @@
       this.dc = dc;
       this.lastSeen = Date.now();
       this.cb.onStatus({ online: true, text: '' });
-      dc.on('data', (msg) => {
+      const assemble = makeAssembler();
+      dc.on('data', (raw) => {
         if (this.dc !== dc) return;
         this.lastSeen = Date.now();
+        const msg = assemble(raw);
         if (!msg || typeof msg !== 'object') return;
         if (msg.t === 'state') this.cb.onState(msg.state);
-        else if (msg.t === 'handover' && msg.room && typeof msg.room === 'object') this.cb.onHandover(msg.room);
+        else if (msg.t === 'handover' && msg.room && typeof msg.room === 'object') {
+          safeSend(dc, { t: 'handover-ok' }); // tell the old host it can let go
+          this.cb.onHandover(msg.room);
+        }
         else if (msg.t === 'res') {
           const p = this.pending.get(msg.id);
           if (p) { this.pending.delete(msg.id); clearTimeout(p.timer); p.resolve(msg.res || { ok: false, error: 'No response.' }); }
@@ -421,6 +473,14 @@
         this.pending.set(id, { resolve, timer });
         safeSend(this.dc, { t: 'req', id, event, payload });
       });
+    }
+
+    /** Stop reconnecting, but keep the channel open a moment so last messages get through. */
+    retire(ms = 2000) {
+      this.closed = true;
+      clearInterval(this.heartbeat);
+      clearTimeout(this.reconnectTimer);
+      setTimeout(() => this.close(), ms);
     }
 
     close() {

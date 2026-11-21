@@ -511,3 +511,51 @@ test('map: the line being drawn is shared live, then replaced by the finished st
   g.setDraft(room, 'dm-secret', { points: null });
   assert.equal(room.map.draft, null);
 });
+
+test('map image upload in chunks through the hub; every device can download it; it stays out of the room view', async () => {
+  const { createHub } = require('../public/shared/hub');
+  const hub = createHub();
+  const sent = { dm: [], p1: [] };
+  const dm = hub.connect((st) => sent.dm.push(st), { canCreate: true });
+  const p1 = hub.connect((st) => sent.p1.push(st));
+  const { code } = hub.handle(dm, 'room:create', { clientId: 'dm-c', name: 'Gina' });
+  hub.handle(p1, 'room:join', { clientId: 'p1-c', name: 'Alice', code });
+
+  const image = `data:image/jpeg;base64,${'A'.repeat(120000)}`;
+  const size = g.MAP_IMAGE.chunk;
+  const parts = [];
+  for (let i = 0; i < image.length; i += size) parts.push(image.slice(i, i + size));
+  assert.equal(parts.length, 3);
+  assert.equal(hub.handle(p1, 'map:upload', { id: 'img1', index: 0, total: 3, data: parts[0] }).ok, false, 'players cannot upload maps');
+  await new Promise((r) => setImmediate(r));
+  const before = sent.dm.length;
+  assert.deepEqual(hub.handle(dm, 'map:upload', { id: 'img1', index: 2, total: 3, data: parts[2] }), { ok: true, received: 1 });
+  hub.handle(dm, 'map:upload', { id: 'img1', index: 0, total: 3, data: parts[0] });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(sent.dm.length, before, 'partial uploads do not spam the other devices');
+  assert.deepEqual(hub.handle(dm, 'map:upload', { id: 'img1', index: 1, total: 3, data: parts[1] }), { ok: true, done: true });
+  await new Promise((r) => setImmediate(r));
+  const view = sent.p1.at(-1);
+  assert.deepEqual([view.map.kind, view.map.imageId, view.map.url], ['upload', 'img1', '']);
+  assert.ok(!JSON.stringify(view).includes('AAAAAAAAAA'), 'the picture is not inside the room view');
+
+  // a player downloads it chunk by chunk
+  let got = '';
+  let total = 1;
+  for (let i = 0; i < total; i++) {
+    const r = hub.handle(p1, 'map:image', { id: 'img1', index: i });
+    assert.equal(r.ok, true);
+    total = r.total;
+    got += r.data;
+  }
+  assert.equal(got, image);
+  // the pen works on uploaded maps
+  assert.equal(hub.handle(dm, 'map:stroke', { points: [[0.1, 0.1], [0.5, 0.5]] }).ok, true);
+  // a link replaces the uploaded image
+  hub.handle(dm, 'map:set', { url: 'https://example.com/map.png' });
+  assert.equal(hub.handle(p1, 'map:image', { id: 'img1', index: 0 }).ok, false);
+  // bad data is refused
+  const bad = hub.handle(dm, 'map:upload', { id: 'x', index: 0, total: 1, data: 'data:text/html;base64,PHNjcmlwdD4=' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /not a supported image/);
+});
