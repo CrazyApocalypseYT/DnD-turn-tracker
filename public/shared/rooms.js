@@ -245,7 +245,9 @@ function createRoom(existingCodes, clientId, playerName, opts = {}) {
     members: {},
     combatants: [],
     nextOrder: 1,
-    combat: { active: false, round: 0, turnId: null, cursor: null, seq: 0 },
+    combat: { active: false, round: 0, turnId: null, cursor: null, seq: 0, phase: null, queue: [] },
+    lastOrder: [],
+    map: { url: '', kind: 'page', strokes: [] },
     settings: { revealEnemies: false },
     log: [],
   };
@@ -350,10 +352,20 @@ function buildFields(input, existing) {
     hpMax,
     hp,
     ac: int(input.ac, 0, BIG, existing ? existing.ac : 10),
-    initiative: initiativeValue(input.initiative, existing ? existing.initiative : 0),
-    initBonus: int(input.initBonus, -999, 9999, existing ? existing.initBonus || 0 : 0),
+    // Initiative is entered on the main page (setInitiative) as a d20 roll;
+    // the total is roll + bonus. A raw `initiative` (e.g. lair actions on 20)
+    // is still accepted as a fixed total.
+    ...initiativeFields(input, existing),
     stats: cleanStats(input.stats),
   };
+}
+
+function initiativeFields(input, existing) {
+  const initBonus = int(input.initBonus, -999, 9999, existing ? existing.initBonus || 0 : 0);
+  if (!isBlank(input.initiative)) return { initBonus, initRoll: null, initiative: initiativeValue(input.initiative, 0) };
+  const initRoll = existing && existing.initRoll != null ? existing.initRoll : null;
+  const initiative = initRoll != null ? initRoll + initBonus : existing ? existing.initiative ?? null : null;
+  return { initBonus, initRoll, initiative };
 }
 
 /**
@@ -410,6 +422,7 @@ function saveCombatant(room, clientId, input) {
       };
       applyEnemyExtras(room, c, input);
       room.combatants.push(c);
+      joinRollQueue(room, member);
       created.push(c);
     }
     const first = created[0];
@@ -434,6 +447,7 @@ function saveCombatant(room, clientId, input) {
   if (room.combatants.length >= LIMITS.combatants) throw new GameError('Too many creatures in this room.');
   const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f, conditions: [] };
   room.combatants.push(c);
+  joinRollQueue(room, member);
   addLog(room, type === 'pc' ? `${member.name} added the character ${c.name}.` : `${member.name} brought along ${c.name} (friendly NPC).`);
   touch(room);
   return [c];
@@ -529,6 +543,7 @@ function removeCombatant(room, clientId, id) {
     room.combat.turnId = null;
     advance(room, +1);
   }
+  if (room.combat.phase === 'rolling') advanceRollQueue(room);
   touch(room);
 }
 
@@ -601,7 +616,13 @@ function sortKey(room, c, depth = 0) {
       return [k[0], k[1] + (0.5 + c.order / 1e7) / (depth + 1)];
     }
   }
-  return [c.initiative, c.lair ? c.order + 1e9 : c.order];
+  return [c.initiative ?? -1e9, c.lair ? c.order + 1e9 : c.order];
+}
+
+/** Initiative as shown: the leader's for summons that act right after it; null = not rolled yet. */
+function shownInitiative(room, c) {
+  const k = sortKey(room, c)[0];
+  return k <= -1e8 ? null : k;
 }
 
 /** negative if a acts before b */
@@ -666,16 +687,139 @@ function requireDm(member) {
   if (member.role !== 'dm') throw new GameError('Only the Dungeon Master can do that.');
 }
 
-function startCombat(room, clientId) {
+/* ------------------------------------------------------------------ */
+/* Initiative round                                                    */
+/* ------------------------------------------------------------------ */
+
+/** Creatures that roll their own initiative (not lair actions or summons that follow their leader). */
+function needsRoll(c) {
+  return !c.lair && !(c.followLeader && c.leader);
+}
+
+/** The creatures a member rolls for: the DM rolls for every enemy. */
+function rollsOf(room, member) {
+  if (!member) return [];
+  return room.combatants.filter((c) => needsRoll(c) && (member.role === 'dm' ? c.type === 'enemy' : c.type !== 'enemy' && c.owner === member.id));
+}
+
+/**
+ * Who enters initiative, in order: the DM always first, then players in the
+ * order they acted in the last combat (join order the first time).
+ */
+function buildRollQueue(room) {
+  const members = Object.values(room.members);
+  const dm = members.find((m) => m.role === 'dm');
+  const last = room.lastOrder || [];
+  const rank = (m) => (last.includes(m.id) ? last.indexOf(m.id) : 1e6);
+  const players = members
+    .filter((m) => m.role === 'player' && rollsOf(room, m).length)
+    .sort((a, b) => rank(a) - rank(b) || a.joinedAt - b.joinedAt);
+  return [...(dm && rollsOf(room, dm).length ? [dm.id] : []), ...players.map((m) => m.id)];
+}
+
+function joinRollQueue(room, member) {
+  if (room.combat.phase !== 'rolling' || member.role === 'screen') return;
+  if (!room.combat.queue.includes(member.id)) room.combat.queue.push(member.id);
+}
+
+/** Drop everyone at the front of the queue who has entered all their rolls; start the fight when done. */
+function advanceRollQueue(room) {
+  const q = room.combat.queue;
+  let moved = false;
+  while (q.length) {
+    const m = memberById(room, q[0]);
+    if (m && rollsOf(room, m).some((c) => c.initRoll == null)) break;
+    q.shift();
+    moved = true;
+  }
+  if (moved) room.combat.seq += 1; // wakes up the next person
+  if (!q.length) beginCombat(room);
+}
+
+function beginCombat(room) {
+  room.combat.phase = null;
+  room.combat.queue = [];
+  room.combat.active = true;
+  room.combat.round = 1;
+  room.combat.cursor = null;
+  // remember the players' order for the next initiative round
+  const order = [];
+  for (const c of sortedCombatants(room)) {
+    if (c.type !== 'enemy' && c.owner && !order.includes(c.owner)) order.push(c.owner);
+  }
+  room.lastOrder = order;
+  addLog(room, '⚔️ Combat started! — Round 1 —');
+  advance(room, +1);
+}
+
+/**
+ * Start combat. With `roll` (what the app does), everyone first enters their
+ * initiative roll, one person at a time; without it, the current
+ * initiative values are used straight away.
+ */
+function startCombat(room, clientId, { roll = false } = {}) {
   const member = getMember(room, clientId);
   requireDm(member);
   const list = eligible(room);
   if (list.length === 0) throw new GameError('Add some creatures first.');
-  room.combat.active = true;
-  room.combat.round = 1;
-  room.combat.cursor = null;
-  addLog(room, '⚔️ Combat started! — Round 1 —');
-  advance(room, +1);
+  if (!roll) {
+    beginCombat(room);
+    touch(room);
+    return;
+  }
+  for (const c of room.combatants) {
+    if (needsRoll(c)) { c.initRoll = null; c.initiative = null; }
+  }
+  room.combat.active = false;
+  room.combat.turnId = null;
+  room.combat.round = 0;
+  room.combat.phase = 'rolling';
+  room.combat.queue = buildRollQueue(room);
+  room.combat.seq += 1;
+  addLog(room, '🎲 Roll for initiative! The DM goes first.');
+  advanceRollQueue(room);
+  touch(room);
+}
+
+/** Enter initiative rolls: [{ id, roll }]. The total is roll + initiative bonus. */
+function setInitiative(room, clientId, { rolls } = {}) {
+  const member = getMember(room, clientId);
+  if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
+  if (!Array.isArray(rolls) || !rolls.length) throw new GameError('Enter an initiative roll.');
+  for (const r of rolls.slice(0, LIMITS.combatants)) {
+    const c = findCombatant(room, r && r.id);
+    if (!canControl(room, member, c)) throw new GameError('You can only roll for your own creatures.');
+    if (!needsRoll(c)) throw new GameError(c.lair ? 'Lair actions always happen on initiative 20.' : `${c.name} acts right after its leader.`);
+    const roll = int(r.roll, -99, 9999, null);
+    if (roll == null) throw new GameError(`Enter a number for ${c.name}.`);
+    c.initRoll = roll;
+    c.initiative = roll + (c.initBonus || 0);
+  }
+  if (room.combat.phase === 'rolling') {
+    const front = room.combat.queue[0];
+    if (front === member.id) addLog(room, `🎲 ${member.name} rolled initiative.`);
+    advanceRollQueue(room);
+  }
+  touch(room);
+}
+
+function d20() {
+  return 1 + (randomBytes(1)[0] % 20);
+}
+
+/** DM: roll automatically for whoever is holding up the initiative round (e.g. offline). */
+function skipRoller(room, clientId) {
+  const member = getMember(room, clientId);
+  requireDm(member);
+  if (room.combat.phase !== 'rolling') throw new GameError('Nobody is rolling initiative.');
+  const m = memberById(room, room.combat.queue[0]);
+  for (const c of rollsOf(room, m)) {
+    if (c.initRoll == null) { c.initRoll = d20(); c.initiative = c.initRoll + (c.initBonus || 0); }
+  }
+  addLog(room, `🎲 ${m ? m.name : 'Someone'}'s initiative was rolled automatically.`);
+  if (room.combat.queue.length) room.combat.queue.shift();
+  room.combat.seq += 1;
+  advanceRollQueue(room);
   touch(room);
 }
 
@@ -683,6 +827,8 @@ function endCombat(room, clientId) {
   const member = getMember(room, clientId);
   requireDm(member);
   room.combat.active = false;
+  room.combat.phase = null;
+  room.combat.queue = [];
   room.combat.turnId = null;
   room.combat.cursor = null;
   room.combat.round = 0;
@@ -831,6 +977,66 @@ function adjustStat(room, clientId, { id, index, delta, value } = {}) {
   return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* Shared map + DM pen                                                 */
+/* ------------------------------------------------------------------ */
+
+const MAP_COLORS = ['red', 'yellow', 'white', 'cyan', 'green', 'black'];
+const MAP_LIMITS = { url: 2000, strokes: 200, points: 400 };
+
+function requireMapper(member) {
+  if (member.role !== 'dm' && member.role !== 'screen') throw new GameError('Only the DM (or the table display) can change the map.');
+}
+
+/** Show a website or an image as the map (empty url = no map). */
+function setMap(room, clientId, { url, kind } = {}) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  const u = str(url, MAP_LIMITS.url);
+  if (u && !/^https?:\/\//i.test(u)) throw new GameError('The map link must start with http:// or https://');
+  const isImage = kind === 'image' || (kind !== 'page' && /\.(png|jpe?g|gif|webp|svg|avif)(\?|#|$)/i.test(u));
+  if (!room.map) room.map = { url: '', kind: 'page', strokes: [] };
+  room.map.url = u;
+  room.map.kind = isImage ? 'image' : 'page';
+  room.map.strokes = [];
+  addLog(room, u ? `🗺️ ${member.name} shared a map.` : `🗺️ ${member.name} removed the map.`);
+  touch(room);
+}
+
+/** One pen stroke; points are [x, y] in 0..1 of the map box. */
+function addStroke(room, clientId, { color, width, points } = {}) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  if (!room.map || !room.map.url) throw new GameError('Share a map first.');
+  if (!Array.isArray(points)) throw new GameError('Invalid drawing.');
+  const clean = [];
+  for (const p of points.slice(0, MAP_LIMITS.points)) {
+    if (!Array.isArray(p)) continue;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    clean.push([Math.round(Math.min(1, Math.max(0, x)) * 1e4) / 1e4, Math.round(Math.min(1, Math.max(0, y)) * 1e4) / 1e4]);
+  }
+  if (clean.length < 1) throw new GameError('Invalid drawing.');
+  room.map.strokes.push({ id: randomId(4), color: MAP_COLORS.includes(color) ? color : 'red', width: int(width, 1, 3, 2), points: clean });
+  if (room.map.strokes.length > MAP_LIMITS.strokes) room.map.strokes.splice(0, room.map.strokes.length - MAP_LIMITS.strokes);
+  touch(room);
+}
+
+function undoStroke(room, clientId) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  if (room.map) room.map.strokes.pop();
+  touch(room);
+}
+
+function clearStrokes(room, clientId) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  if (room.map) room.map.strokes = [];
+  touch(room);
+}
+
 function updateSettings(room, clientId, settings = {}) {
   const member = getMember(room, clientId);
   requireDm(member);
@@ -880,7 +1086,9 @@ function viewFor(room, clientId, isOnline = () => false) {
         name: c.name,
         cls: c.cls,
         level: c.level,
-        initiative: sortKey(room, c)[0],
+        initiative: shownInitiative(room, c),
+        initRoll: c.initRoll ?? null,
+        needsRoll: needsRoll(c),
         initBonus: secret ? null : c.initBonus || 0,
         boss: Boolean(c.boss),
         lair: Boolean(c.lair),
@@ -918,7 +1126,17 @@ function viewFor(room, clientId, isOnline = () => false) {
       round: room.combat.round,
       turnId: current && (isDm || !current.hidden) ? current.id : null,
       seq: room.combat.seq,
+      phase: room.combat.phase || null,
+      rollers: (room.combat.queue || []).map((id) => {
+        const m = memberById(room, id);
+        return { id, name: m ? m.name : '?', role: m ? m.role : 'player' };
+      }),
     },
+    yourRoll: room.combat.phase === 'rolling' && (room.combat.queue || [])[0] === me.id,
+    map: room.map
+      ? { url: room.map.url, kind: room.map.kind, strokes: room.map.strokes }
+      : { url: '', kind: 'page', strokes: [] },
+    canMap: me.role === 'dm' || me.role === 'screen',
     yourTurn,
     settings: { ...room.settings },
     log: room.log
@@ -949,6 +1167,13 @@ return {
   adjustStat,
   addCondition,
   removeCondition,
+  setInitiative,
+  skipRoller,
+  setMap,
+  addStroke,
+  undoStroke,
+  clearStrokes,
+  MAP_COLORS,
   conditionLevel,
   BAR_COLORS,
   TINTS,

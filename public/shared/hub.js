@@ -81,7 +81,17 @@
       'hp:change'(conn, p, room) {
         game.changeHp(room, conn.clientId, p);
       },
-      'combat:start': (conn, _p, room) => game.startCombat(room, conn.clientId),
+      'combat:start': (conn, p, room) => game.startCombat(room, conn.clientId, { roll: Boolean(p.roll) }),
+      'initiative:set'(conn, p, room) {
+        game.setInitiative(room, conn.clientId, p);
+      },
+      'initiative:skip': (conn, _p, room) => game.skipRoller(room, conn.clientId),
+      'map:set': (conn, p, room) => game.setMap(room, conn.clientId, p),
+      'map:stroke'(conn, p, room) {
+        game.addStroke(room, conn.clientId, p);
+      },
+      'map:undo': (conn, _p, room) => game.undoStroke(room, conn.clientId),
+      'map:clear': (conn, _p, room) => game.clearStrokes(room, conn.clientId),
       'combat:end': (conn, _p, room) => game.endCombat(room, conn.clientId),
       'turn:next': (conn, _p, room) => game.nextTurn(room, conn.clientId),
       'turn:prev': (conn, _p, room) => game.prevTurn(room, conn.clientId),
