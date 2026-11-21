@@ -254,7 +254,7 @@ function createRoom(existingCodes, clientId, playerName, opts = {}) {
   };
   if (opts.screen) {
     room.members[clientId] = { id: randomId(), name, role: 'screen', creator: true, joinedAt: now };
-    addLog(room, `${name} (table screen) created the room. The DM joins with the DM key.`);
+    addLog(room, `📺 ${/display|screen|table/i.test(name) ? 'The table display' : `${name} (table display)`} created the room. The DM joins with the DM key.`);
   } else {
     room.members[clientId] = { id: randomId(), name, role: 'dm', joinedAt: now };
     addLog(room, `${name} created the room and is the Dungeon Master.`);
@@ -1029,15 +1029,12 @@ function setMap(room, clientId, { url, kind } = {}) {
   room.map.url = u;
   room.map.kind = isImage ? 'image' : 'page';
   room.map.strokes = [];
+  room.map.draft = null;
   addLog(room, u ? `🗺️ ${member.name} shared a map.` : `🗺️ ${member.name} removed the map.`);
   touch(room);
 }
 
-/** One pen stroke; points are [x, y] in 0..1 of the map box. */
-function addStroke(room, clientId, { color, width, points } = {}) {
-  const member = getMember(room, clientId);
-  requireMapper(member);
-  if (!room.map || !room.map.url) throw new GameError('Share a map first.');
+function cleanPoints(points) {
   if (!Array.isArray(points)) throw new GameError('Invalid drawing.');
   const clean = [];
   for (const p of points.slice(0, MAP_LIMITS.points)) {
@@ -1048,9 +1045,31 @@ function addStroke(room, clientId, { color, width, points } = {}) {
     clean.push([Math.round(Math.min(1, Math.max(0, x)) * 1e4) / 1e4, Math.round(Math.min(1, Math.max(0, y)) * 1e4) / 1e4]);
   }
   if (clean.length < 1) throw new GameError('Invalid drawing.');
+  return clean;
+}
+
+/** One pen stroke; points are [x, y] in 0..1 of the map box. */
+function addStroke(room, clientId, { color, width, points } = {}) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  if (!room.map || !room.map.url) throw new GameError('Share a map first.');
+  const clean = cleanPoints(points);
+  room.map.draft = null;
   room.map.strokes.push({ id: randomId(4), color: MAP_COLORS.includes(color) ? color : 'red', width: int(width, 1, 3, 2), points: clean });
   if (room.map.strokes.length > MAP_LIMITS.strokes) room.map.strokes.splice(0, room.map.strokes.length - MAP_LIMITS.strokes);
   touch(room);
+}
+
+/**
+ * The line being drawn right now (sent a few times a second while the pen is
+ * down), so other screens see it appear live. Replaced by the real stroke when
+ * the pen lifts; `points: null` clears it.
+ */
+function setDraft(room, clientId, { color, width, points } = {}) {
+  const member = getMember(room, clientId);
+  requireMapper(member);
+  if (!room.map || !room.map.url) return;
+  room.map.draft = points == null ? null : { color: MAP_COLORS.includes(color) ? color : 'red', width: int(width, 1, 3, 2), points: cleanPoints(points) };
 }
 
 function undoStroke(room, clientId) {
@@ -1063,7 +1082,7 @@ function undoStroke(room, clientId) {
 function clearStrokes(room, clientId) {
   const member = getMember(room, clientId);
   requireMapper(member);
-  if (room.map) room.map.strokes = [];
+  if (room.map) { room.map.strokes = []; room.map.draft = null; }
   touch(room);
 }
 
@@ -1165,7 +1184,7 @@ function viewFor(room, clientId, isOnline = () => false) {
     },
     yourRoll: room.combat.phase === 'rolling' && (room.combat.queue || [])[0] === me.id,
     map: room.map
-      ? { url: room.map.url, kind: room.map.kind, strokes: room.map.strokes }
+      ? { url: room.map.url, kind: room.map.kind, strokes: room.map.strokes, draft: room.map.draft || null }
       : { url: '', kind: 'page', strokes: [] },
     canMap: me.role === 'dm' || me.role === 'screen',
     yourTurn,
@@ -1203,6 +1222,7 @@ return {
   setReserve,
   setMap,
   addStroke,
+  setDraft,
   undoStroke,
   clearStrokes,
   MAP_COLORS,
