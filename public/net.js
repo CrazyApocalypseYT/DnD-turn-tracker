@@ -118,7 +118,26 @@
       this.code = null;
       this.closed = false;
       this.retryTimer = null;
+      this.handingOver = false;
       this.heartbeat = setInterval(() => this.checkRemotes(), HEARTBEAT_MS);
+    }
+
+    /**
+     * Move hosting to another connected device (chosen by whoever holds this
+     * device, e.g. the DM handing the room to the table tablet). The full room
+     * is sent over that device's direct connection; it then takes over the
+     * room code, and everyone else reconnects to it automatically.
+     */
+    async handover(publicId) {
+      const room = this.hub.rooms.get(this.code);
+      if (!room) return { ok: false, error: 'No room to hand over.' };
+      const entry = Object.entries(room.members).find(([, m]) => m.id === publicId);
+      const remote = entry && [...this.remotes].find((r) => r.conn && r.conn.clientId === entry[0] && r.dc.open);
+      if (!remote) return { ok: false, error: 'That device is not connected right now.' };
+      this.handingOver = true; // freeze the room: no more changes while it moves
+      safeSend(remote.dc, { t: 'handover', room: JSON.parse(JSON.stringify(room)) });
+      await new Promise((r) => setTimeout(r, 800)); // let the message arrive before we let go of the room code
+      return { ok: true };
     }
 
     setReady() {
@@ -223,7 +242,9 @@
         remote.lastSeen = Date.now();
         if (!remote.conn || !msg || typeof msg !== 'object') return;
         if (msg.t === 'req') {
-          const res = this.hub.handle(remote.conn, String(msg.event), msg.payload);
+          const res = this.handingOver
+            ? { ok: false, error: 'The room is moving to another device – try again in a few seconds.' }
+            : this.hub.handle(remote.conn, String(msg.event), msg.payload);
           safeSend(dc, { t: 'res', id: msg.id, res });
         } else if (msg.t === 'ping') {
           safeSend(dc, { t: 'pong' });
@@ -251,6 +272,7 @@
     }
 
     request(event, payload) {
+      if (this.handingOver) return Promise.resolve({ ok: false, error: 'The room is moving to another device.' });
       return Promise.resolve(this.hub.handle(this.local, event, payload));
     }
 
@@ -271,7 +293,7 @@
     constructor(cb) {
       if (!window.Peer) throw new Error('PeerJS failed to load.');
       this.kind = 'guest';
-      this.cb = Object.assign({ onState: noop, onStatus: noop, onReconnected: noop }, cb);
+      this.cb = Object.assign({ onState: noop, onStatus: noop, onReconnected: noop, onHandover: noop }, cb);
       this.peer = null;
       this.dc = null;
       this.code = null;
@@ -344,6 +366,7 @@
         this.lastSeen = Date.now();
         if (!msg || typeof msg !== 'object') return;
         if (msg.t === 'state') this.cb.onState(msg.state);
+        else if (msg.t === 'handover' && msg.room && typeof msg.room === 'object') this.cb.onHandover(msg.room);
         else if (msg.t === 'res') {
           const p = this.pending.get(msg.id);
           if (p) { this.pending.delete(msg.id); clearTimeout(p.timer); p.resolve(msg.res || { ok: false, error: 'No response.' }); }
