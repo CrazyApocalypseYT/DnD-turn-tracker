@@ -1799,14 +1799,19 @@
   const libDlg = $('#lib-dialog');
   let srdMonsters = null;
 
+  let srdError = '';
   async function loadSrd() {
     if (srdMonsters) return srdMonsters;
     try {
-      const res = await fetch('data/srd-monsters.json');
-      srdMonsters = (await res.json()).monsters || [];
-    } catch {
-      srdMonsters = [];
-      toast('Could not load the SRD monster list.', true);
+      const res = await fetch('data/srd-monsters.json?v=1');
+      if (!res.ok) throw new Error(`the server answered ${res.status}`);
+      const list = (await res.json()).monsters;
+      if (!Array.isArray(list) || !list.length) throw new Error('the list is empty');
+      srdMonsters = list;
+      srdError = '';
+    } catch (err) {
+      srdError = `Couldn't load the SRD monster list (${err.message}). Check the connection and open the library again.`;
+      return []; // not cached: try again next time
     }
     return srdMonsters;
   }
@@ -1854,7 +1859,8 @@
     if (crMatch) items = items.filter((i) => i.cr !== undefined && crValue(i.cr) === crValue(crMatch[1]));
     else if (q) items = items.filter((i) => q.split(/\s+/).every((w) => i.search.includes(w)));
     const shown = items.slice(0, 80);
-    $('#lib-list').replaceChildren(...(shown.length ? shown.map((i) => h('div', { class: `lib-row ${i.kind}` },
+    const errorNote = src !== 'mine' && srdError ? h('p', { class: 'error' }, srdError) : null;
+    $('#lib-list').replaceChildren(...(errorNote ? [errorNote] : []), ...(shown.length ? shown.map((i) => h('div', { class: `lib-row ${i.kind}` },
       h('div', { class: 'lib-main' },
         h('div', { class: 'lib-name' }, i.kind === 'mine' ? `💾 ${i.name}` : i.name),
         h('div', { class: 'muted small' }, i.sub)),

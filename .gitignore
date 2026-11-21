@@ -1,4 +1,5 @@
 node_modules/
-data/
+# the Node server's saved rooms (not public/data, which holds the monster list)
+/data/
 .DS_Store
 *.log
