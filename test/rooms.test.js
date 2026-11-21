@@ -496,3 +496,18 @@ test('friendly NPCs can wait in reserve: no turns, no initiative roll, until the
   g.setReserve(room, 'p1', { id: wolf.id, reserve: false });
   assert.deepEqual(g.viewFor(room, 'p1').combat.rollers.map((r) => r.name), ['Bob', 'Alice']);
 });
+
+test('map: the line being drawn is shared live, then replaced by the finished stroke', () => {
+  const room = setup();
+  g.setMap(room, 'dm-secret', { url: 'https://example.com/map.png' });
+  assert.throws(() => g.setDraft(room, 'p1', { points: [[0, 0]] }), /Only the DM/);
+  g.setDraft(room, 'dm-secret', { color: 'cyan', points: [[0.1, 0.1], [0.2, 0.2]] });
+  assert.deepEqual(g.viewFor(room, 'p1').map.draft, { color: 'cyan', width: 2, points: [[0.1, 0.1], [0.2, 0.2]] });
+  g.addStroke(room, 'dm-secret', { color: 'cyan', points: [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]] });
+  assert.equal(g.viewFor(room, 'p1').map.draft, null, 'finished stroke replaces the draft');
+  assert.equal(room.map.strokes.length, 1);
+  assert.ok(!room.log.some((l) => /draft/i.test(l.text)), 'drafts are not logged');
+  g.setDraft(room, 'dm-secret', { points: [[0.5, 0.5]] });
+  g.setDraft(room, 'dm-secret', { points: null });
+  assert.equal(room.map.draft, null);
+});

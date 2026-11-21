@@ -1206,12 +1206,24 @@
       if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.004 && current.points.length < 400) {
         current.points.push(p);
         redraw();
+        sendDraft();
       }
     });
+    // share the line while it's being drawn, a few times a second, so other screens see it live
+    let draftTimer = null;
+    function sendDraft() {
+      if (draftTimer) return;
+      draftTimer = setTimeout(() => {
+        draftTimer = null;
+        if (current) emit('map:draft', current); // no error toasts for these
+      }, 200);
+    }
     const finish = () => {
       if (!current) return;
       const stroke = current;
       current = null;
+      clearTimeout(draftTimer);
+      draftTimer = null;
       pending.push(stroke);
       redraw();
       act('map:stroke', stroke).then(() => { pending = pending.filter((x) => x !== stroke); redraw(); });
@@ -1239,7 +1251,9 @@
       ctx.lineJoin = 'round';
       ctx.shadowColor = 'rgba(0,0,0,0.6)';
       ctx.shadowBlur = 2;
-      for (const st of [...map.strokes, ...pending, ...(current ? [current] : [])]) drawStroke(ctx, st, r.width, r.height);
+      // someone else's line in progress (skip it while drawing here: it's our own)
+      const draft = map.draft && !current && !pending.length ? [map.draft] : [];
+      for (const st of [...map.strokes, ...pending, ...draft, ...(current ? [current] : [])]) drawStroke(ctx, st, r.width, r.height);
     }
     new ResizeObserver(() => redraw()).observe(stage);
     document.addEventListener('fullscreenchange', () => setTimeout(redraw, 50));
@@ -1284,7 +1298,8 @@
     $('#map-panel-view').hidden = !m.url;
     if (showPanel && m.url) panelMap.update(m, { canDraw: state.canMap });
     if (dm && document.activeElement !== $('#map-url')) $('#map-url').value = m.url || '';
-    const showDisplay = isScreen() && m.url && !fighting;
+    // the table display always shows a shared map (with the DM's drawings), in and out of combat
+    const showDisplay = isScreen() && Boolean(m.url);
     $('#d-map').hidden = !showDisplay;
     if (showDisplay) displayMap.update(m, { canDraw: state.canMap });
   }

@@ -611,3 +611,11 @@ button.badge.host { font: inherit; font-size: 0.75rem; font-weight: 700; color: 
 .dm-toolbar .btn.active { outline: 2px solid var(--accent); }
 .map-panel { margin-bottom: 1rem; }
 #btn-display-map { margin-top: 0.3rem; }
+
+/* table display during combat: the map sits under the turn info, sized to leave room for the turn order */
+.display:not(.idle) .d-map { order: 1; }
+.display:not(.idle) .d-sides { order: 2; }
+.display:not(.idle) .d-bottom { order: 3; }
+.display:not(.idle) .d-map .map-stage { width: min(100%, calc(52vh * 16 / 9)); margin: 0 auto; }
+.display:not(.idle) .d-map .map-note { display: none; }
+.display .d-map .map-wrap:fullscreen .map-stage, .display .d-map .map-wrap.pseudo-fs .map-stage { width: min(100%, calc((100vh - 4.5rem) * 16 / 9)); }

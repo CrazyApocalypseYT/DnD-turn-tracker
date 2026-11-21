@@ -93,6 +93,7 @@
       'map:stroke'(conn, p, room) {
         game.addStroke(room, conn.clientId, p);
       },
+      'map:draft': (conn, p, room) => game.setDraft(room, conn.clientId, p),
       'map:undo': (conn, _p, room) => game.undoStroke(room, conn.clientId),
       'map:clear': (conn, _p, room) => game.clearStrokes(room, conn.clientId),
       'combat:end': (conn, _p, room) => game.endCombat(room, conn.clientId),
