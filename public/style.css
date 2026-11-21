@@ -619,3 +619,9 @@ button.badge.host { font: inherit; font-size: 0.75rem; font-weight: 700; color: 
 .display:not(.idle) .d-map .map-stage { width: min(100%, calc(52vh * 16 / 9)); margin: 0 auto; }
 .display:not(.idle) .d-map .map-note { display: none; }
 .display .d-map .map-wrap:fullscreen .map-stage, .display .d-map .map-wrap.pseudo-fs .map-stage { width: min(100%, calc((100vh - 4.5rem) * 16 / 9)); }
+
+/* uploaded map images, map buttons */
+.map-loading { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--muted); font-weight: 700; }
+.map-upload-btn { grid-column: 1 / -1; justify-content: center; }
+.display-map-btns { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.3rem; }
+.map-tools a.btn { text-decoration: none; }

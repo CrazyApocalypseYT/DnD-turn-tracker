@@ -24,6 +24,8 @@
     const onChange = opts.onChange || (() => {});
     /** connections: { clientId, code, send(state), canCreate } */
     const conns = new Set();
+    /** map image uploads in progress: `${code}|${id}` -> { parts, total, at } */
+    const uploads = new Map();
 
     function onlineSet(code) {
       const set = new Set();
@@ -94,6 +96,29 @@
         game.addStroke(room, conn.clientId, p);
       },
       'map:draft': (conn, p, room) => game.setDraft(room, conn.clientId, p),
+      /** Upload a map image in chunks: { id, index, total, data }. The map changes when the last chunk arrives. */
+      'map:upload'(conn, { id, index, total, data }, room) {
+        const member = game.getMember(room, conn.clientId);
+        if (member.role !== 'dm' && member.role !== 'screen') throw new game.GameError('Only the DM (or the table display) can change the map.');
+        const n = Math.floor(Number(total));
+        const i = Math.floor(Number(index));
+        const maxParts = Math.ceil(game.MAP_IMAGE.maxChars / game.MAP_IMAGE.chunk);
+        if (!(n >= 1 && n <= maxParts && i >= 0 && i < n) || typeof data !== 'string' || data.length > game.MAP_IMAGE.chunk) {
+          throw new game.GameError('Invalid image upload.');
+        }
+        const key = `${room.code}|${String(id).slice(0, 40)}`;
+        for (const [k, u] of uploads) if (Date.now() - u.at > 120000) uploads.delete(k); // forget stalled uploads
+        const up = uploads.get(key) || { parts: new Array(n).fill(null), total: n, at: Date.now() };
+        if (up.total !== n) throw new game.GameError('Invalid image upload.');
+        up.parts[i] = data;
+        up.at = Date.now();
+        uploads.set(key, up);
+        if (up.parts.some((x) => x === null)) return { quiet: true, received: up.parts.filter(Boolean).length };
+        uploads.delete(key);
+        game.setMapImage(room, conn.clientId, { id, data: up.parts.join('') });
+        return { done: true };
+      },
+      'map:image': (conn, p, room) => ({ ...game.mapImageChunk(room, conn.clientId, p), quiet: true }),
       'map:undo': (conn, _p, room) => game.undoStroke(room, conn.clientId),
       'map:clear': (conn, _p, room) => game.clearStrokes(room, conn.clientId),
       'combat:end': (conn, _p, room) => game.endCombat(room, conn.clientId),
@@ -129,9 +154,9 @@
           room = rooms.get(conn.code);
           if (!room) throw new game.GameError('Room not found. Please re-join.');
         }
-        const result = handler(conn, payload && typeof payload === 'object' ? payload : {}, room) || {};
+        const { quiet, ...result } = handler(conn, payload && typeof payload === 'object' ? payload : {}, room) || {};
         const code = result.code || (room && room.code);
-        if (code) {
+        if (code && !quiet) { // `quiet` = nothing changed for others (e.g. a download)
           Promise.resolve().then(() => {
             const changed = rooms.get(code);
             if (changed) onChange(changed);

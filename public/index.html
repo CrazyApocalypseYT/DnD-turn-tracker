@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
-  <link rel="stylesheet" href="style.css?v=2026-11-21b" />
+  <link rel="stylesheet" href="style.css?v=2026-11-21c" />
 </head>
 <body>
   <div id="flash" aria-hidden="true"></div>
@@ -120,8 +120,9 @@
         </select>
         <button class="btn primary small" type="submit">Show</button>
         <button id="btn-map-remove" class="btn ghost small" type="button">Remove</button>
+        <label class="btn small file-btn map-upload-btn" title="A screenshot or picture of your map – works even for sites that can't be shown here">📷 Upload map image<input id="map-file" type="file" accept="image/*" hidden /></label>
       </form>
-      <p id="map-hint" class="muted small" hidden>Paste a link to a map image or website: it shows on the table display and players' phones while not in combat. Turn on ✏️ Pen to draw on it – your drawings appear on every screen.</p>
+      <p id="map-hint" class="muted small" hidden>Paste a link to a map image or website, <strong>or upload a picture</strong> (e.g. a screenshot of the map). It shows on the table display, and on players' phones while not in combat. Turn on ✏️ Pen to draw on it – your drawings appear on every screen. Many map websites (e.g. Map Genie) don't allow being shown inside other apps: then take a screenshot and upload it.</p>
       <div id="map-panel-view"></div>
     </section>
 
@@ -162,7 +163,10 @@
               <code id="screen-dmkey" hidden></code>
             </div>
             <p id="screen-dm-hint" class="muted tiny-text">👑 The DM's tools (monster library, map, music, enemies) are on the DM's phone: open this site there and join with the room code + DM key (“I'm the DM on a new device”).</p>
-            <button id="btn-display-map" class="btn ghost small" type="button">🗺️ Set the map from here</button>
+            <div class="display-map-btns">
+              <button id="btn-display-map" class="btn ghost small" type="button">🗺️ Map link</button>
+              <label class="btn ghost small file-btn">📷 Map image<input id="display-map-file" type="file" accept="image/*" hidden /></label>
+            </div>
           </div>
         </div>
       </div>
@@ -409,7 +413,7 @@
         <button id="btn-music-save" class="btn ghost small" type="button" title="Save to your list">💾</button>
       </form>
       <div id="music-saved" class="music-saved"></div>
-      <p class="muted tiny-text">Only you (the DM) hear this, on this device – connect it to a speaker. Press play inside the player. Some YouTube videos can't be embedded; Spotify may only play short previews unless you're signed in to Spotify in this browser.</p>
+      <p class="muted tiny-text">Only the DM and the table display have this. It plays on this device – connect it to a speaker. Press play inside the player. Some YouTube videos can't be embedded; Spotify may only play short previews unless you're signed in to Spotify in this browser.</p>
     </div>
   </aside>
 
@@ -495,12 +499,12 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="config.js?v=2026-11-21b"></script>
+  <script src="config.js?v=2026-11-21c"></script>
   <script src="vendor/peerjs.min.js"></script>
   <script src="vendor/qrcode.js"></script>
-  <script src="shared/rooms.js?v=2026-11-21b"></script>
-  <script src="shared/hub.js?v=2026-11-21b"></script>
-  <script src="net.js?v=2026-11-21b"></script>
-  <script src="app.js?v=2026-11-21b"></script>
+  <script src="shared/rooms.js?v=2026-11-21c"></script>
+  <script src="shared/hub.js?v=2026-11-21c"></script>
+  <script src="net.js?v=2026-11-21c"></script>
+  <script src="app.js?v=2026-11-21c"></script>
 </body>
 </html>
