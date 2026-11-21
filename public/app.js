@@ -1059,7 +1059,25 @@
     const dm = isDm();
     $('#music-dock').hidden = !dm;
     if (!dm) stopMusic();
+    $('#dm-toolbar').hidden = !dm;
+    $('#tb-music').setAttribute('aria-expanded', String(!$('#music-dock').classList.contains('collapsed')));
   }
+
+  /* ---------- DM toolbar ---------- */
+  $('#tb-enemy').addEventListener('click', () => openEditor('enemy'));
+  $('#tb-library').addEventListener('click', () => $('#btn-library').click());
+  $('#tb-map').addEventListener('click', () => {
+    dmMapOpen = !dmMapOpen;
+    render();
+    if (dmMapOpen) {
+      $('#map-panel').scrollIntoView({ block: 'start', behavior: 'smooth' });
+      if (!(state.map && state.map.url)) $('#map-url').focus({ preventScroll: true });
+    }
+  });
+  $('#tb-music').addEventListener('click', () => {
+    $('#btn-music-toggle').click();
+    $('#tb-music').setAttribute('aria-expanded', String(!$('#music-dock').classList.contains('collapsed')));
+  });
 
   function fillSelect(sel, options, keep) {
     const prev = keep ? sel.value : '';
@@ -1248,12 +1266,18 @@
   $('#map-panel-view').append(panelMap.el);
   $('#d-map').append(displayMap.el);
 
+  // DM: the map box opens from the toolbar. Players: it appears at the top when the DM shares a map
+  // (out of combat) and can be hidden until the next map. The table display has its own big box.
+  let dmMapOpen = false;
+  let playerMapHiddenFor = null;
+
   function renderMap() {
     const dm = isDm();
     const m = state.map || { url: '', strokes: [] };
     const fighting = state.combat.active || state.combat.phase === 'rolling';
-    // DM: always (to set it up and draw); players: while not fighting; the display uses its own big box
-    const showPanel = !isScreen() && (dm || (m.url && !fighting));
+    const showPanel = !isScreen() && (dm ? dmMapOpen : Boolean(m.url && !fighting && playerMapHiddenFor !== m.url));
+    $('#tb-map').setAttribute('aria-expanded', String(dmMapOpen));
+    $('#tb-map').classList.toggle('active', dmMapOpen);
     $('#map-panel').hidden = !showPanel;
     $('#map-form').hidden = !dm;
     $('#map-hint').hidden = !dm;
@@ -1264,6 +1288,19 @@
     $('#d-map').hidden = !showDisplay;
     if (showDisplay) displayMap.update(m, { canDraw: state.canMap });
   }
+
+  $('#btn-map-hide').addEventListener('click', () => {
+    if (isDm()) dmMapOpen = false;
+    else playerMapHiddenFor = state.map && state.map.url;
+    render();
+  });
+  // table display: set the map right from the tablet
+  $('#btn-display-map').addEventListener('click', () => {
+    const current = (state && state.map && state.map.url) || '';
+    const url = prompt('Paste a link to the map (an image or a website). Leave empty to remove it.', current);
+    if (url === null) return;
+    act('map:set', { url: url.trim() });
+  });
 
   $('#map-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1450,6 +1487,7 @@
     $('#screen-code').textContent = state.code;
     const hasDm = state.members.some((m) => m.role === 'dm');
     $('#screen-dmkey-box').hidden = hasDm || !state.dmKey;
+    $('#screen-dm-hint').hidden = hasDm;
     $('#screen-dmkey').textContent = state.dmKey || '';
   }
   $('#btn-reveal-key').addEventListener('click', () => {

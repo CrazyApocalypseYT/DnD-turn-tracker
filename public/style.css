@@ -601,3 +601,13 @@ button.badge.host { font: inherit; font-size: 0.75rem; font-weight: 700; color: 
 .badge.reserve-b { background: #3a3550; color: #d6d0ff; }
 .chip-turn.reserve { opacity: 0.45; border-style: dotted; border-color: var(--line); }
 .mini-actions { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ======================= DM toolbar + map at the top ======================= */
+.dm-toolbar {
+  display: flex; gap: 0.4rem; flex-wrap: wrap; margin: -0.3rem 0 0.9rem;
+  padding: 0.5rem; background: var(--panel); border: 1px solid #a8742a; border-radius: var(--radius);
+}
+.dm-toolbar .btn { flex: 1 1 auto; }
+.dm-toolbar .btn.active { outline: 2px solid var(--accent); }
+.map-panel { margin-bottom: 1rem; }
+#btn-display-map { margin-top: 0.3rem; }

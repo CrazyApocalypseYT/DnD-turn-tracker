@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2026-11-21b" />
 </head>
 <body>
   <div id="flash" aria-hidden="true"></div>
@@ -97,6 +97,34 @@
       <div id="boss-bar" class="boss-bar" hidden></div>
     </section>
 
+    <!-- DM toolbar: the DM's tools, always at the top of the DM's screen -->
+    <nav id="dm-toolbar" class="dm-toolbar" aria-label="Dungeon Master tools" hidden>
+      <button id="tb-enemy" class="btn accent small">➕ Enemies</button>
+      <button id="tb-library" class="btn small">📚 Monsters</button>
+      <button id="tb-map" class="btn small" aria-expanded="false">🗺️ Map</button>
+      <button id="tb-music" class="btn small" aria-expanded="false">🎵 Music</button>
+    </nav>
+
+    <!-- map (DM: set + draw; players: look, out of combat) -->
+    <section id="map-panel" class="panel map-panel" hidden>
+      <div class="panel-head">
+        <h2>🗺️ Map</h2>
+        <button id="btn-map-hide" class="btn ghost small" type="button">Hide</button>
+      </div>
+      <form id="map-form" class="map-form" hidden>
+        <input id="map-url" type="url" inputmode="url" placeholder="Paste a map link (website or image)" />
+        <select id="map-kind" aria-label="Show as">
+          <option value="">Auto</option>
+          <option value="image">Image</option>
+          <option value="page">Website</option>
+        </select>
+        <button class="btn primary small" type="submit">Show</button>
+        <button id="btn-map-remove" class="btn ghost small" type="button">Remove</button>
+      </form>
+      <p id="map-hint" class="muted small" hidden>Paste a link to a map image or website: it shows on the table display and players' phones while not in combat. Turn on ✏️ Pen to draw on it – your drawings appear on every screen.</p>
+      <div id="map-panel-view"></div>
+    </section>
+
     <!-- ===================== TABLE DISPLAY (tablet) ===================== -->
     <section id="display" class="display" hidden>
       <div id="d-boss" class="boss-bar d-boss" hidden></div>
@@ -133,6 +161,8 @@
               <button id="btn-reveal-key" class="btn ghost small">Show DM key</button>
               <code id="screen-dmkey" hidden></code>
             </div>
+            <p id="screen-dm-hint" class="muted tiny-text">👑 The DM's tools (monster library, map, music, enemies) are on the DM's phone: open this site there and join with the room code + DM key (“I'm the DM on a new device”).</p>
+            <button id="btn-display-map" class="btn ghost small" type="button">🗺️ Set the map from here</button>
           </div>
         </div>
       </div>
@@ -199,23 +229,6 @@
             <span class="muted small">DM key (to continue as DM on another device):</span>
             <code id="dm-key"></code>
           </div>
-        </section>
-
-        <!-- map (DM: set + draw; players: look, out of combat) -->
-        <section id="map-panel" class="panel" hidden>
-          <h2>🗺️ Map</h2>
-          <form id="map-form" class="map-form" hidden>
-            <input id="map-url" type="url" inputmode="url" placeholder="Paste a map link (website or image)" />
-            <select id="map-kind" aria-label="Show as">
-              <option value="">Auto</option>
-              <option value="image">Image</option>
-              <option value="page">Website</option>
-            </select>
-            <button class="btn primary small" type="submit">Show</button>
-            <button id="btn-map-remove" class="btn ghost small" type="button">Remove</button>
-          </form>
-          <p id="map-hint" class="muted small" hidden>The map shows on the table display while not in combat. Turn on ✏️ to draw on it; your drawings appear on every screen.</p>
-          <div id="map-panel-view"></div>
         </section>
 
         <!-- members -->
@@ -482,12 +495,12 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="config.js"></script>
+  <script src="config.js?v=2026-11-21b"></script>
   <script src="vendor/peerjs.min.js"></script>
   <script src="vendor/qrcode.js"></script>
-  <script src="shared/rooms.js"></script>
-  <script src="shared/hub.js"></script>
-  <script src="net.js"></script>
-  <script src="app.js"></script>
+  <script src="shared/rooms.js?v=2026-11-21b"></script>
+  <script src="shared/hub.js?v=2026-11-21b"></script>
+  <script src="net.js?v=2026-11-21b"></script>
+  <script src="app.js?v=2026-11-21b"></script>
 </body>
 </html>

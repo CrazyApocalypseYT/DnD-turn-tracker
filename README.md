@@ -87,7 +87,7 @@ npm test
 
 1. **Host:** on the tablet, open the site → *Host on this tablet (table display)*. The DM opens the site on their phone and joins with the room code + the **DM key** shown on the tablet (*I'm the DM on a new device*). No tablet? The DM taps *Host on my device as the DM*.
 2. **Players:** scan the QR code (or tap **📱 Invite** next to the room code) or type the code → *Join as player*, then fill in your character (or pick a saved one). Optionally add up to 3 friendly NPCs, and tap 💾 Save party to reuse them next time.
-3. **DM:** add enemies (*+ Add enemies*, *📚 Monster library*, *👑 + Boss*…). Out of combat, share a **🗺️ map** and draw on it.
+3. **DM:** use the **DM toolbar** at the top of your screen (it only appears on the DM's device): **➕ Enemies**, **📚 Monsters** (the SRD library and your saved monsters), **🗺️ Map** (paste a map link, then draw on it with ✏️ Pen), **🎵 Music**. Boss and lair buttons are in the *Dungeon Master* box. The table display can also set the map with its *🗺️ Set the map from here* button.
 4. **DM:** **⚔️ Start combat** → everyone enters their initiative roll, DM first. The fight starts when everyone is done.
 5. On your turn your screen goes green and chimes. Use **🗡️ Deal damage** (or the *Attack* button on an enemy) to hit enemies, then **End my turn**.
 

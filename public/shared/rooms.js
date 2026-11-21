@@ -254,7 +254,7 @@ function createRoom(existingCodes, clientId, playerName, opts = {}) {
   };
   if (opts.screen) {
     room.members[clientId] = { id: randomId(), name, role: 'screen', creator: true, joinedAt: now };
-    addLog(room, `${name} (table screen) created the room. The DM joins with the DM key.`);
+    addLog(room, `📺 ${/display|screen|table/i.test(name) ? 'The table display' : `${name} (table display)`} created the room. The DM joins with the DM key.`);
   } else {
     room.members[clientId] = { id: randomId(), name, role: 'dm', joinedAt: now };
     addLog(room, `${name} created the room and is the Dungeon Master.`);
