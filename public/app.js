@@ -126,6 +126,7 @@
   let state = null;
   let session = store.get('dnd.session'); // { code, name, host?, screen? }
   let lastAlertSeq = null;
+  let lastRollSeq = null;
   let promptedForPc = false;
 
   const callbacks = {
@@ -139,6 +140,19 @@
       const bar = $('#net-status');
       bar.textContent = text || '';
       bar.hidden = !text;
+    },
+    /** The hosting device handed the room to this device: become the host. */
+    async onHandover(room) {
+      if (!session || session.host || !room || room.code !== session.code) return;
+      const old = net;
+      net = new P2PHost(callbacks, { clientId, onSave: saveHostedRoom });
+      saveHostedRoom(room);
+      session = { ...session, host: true };
+      store.set('dnd.session', session);
+      if (old) old.close();
+      const res = await net.restore(room, session.name);
+      if (res.ok) toast('📡 This device is now hosting the room.');
+      else toast(res.error, true);
     },
     async onReconnected() {
       // after a dropped connection, silently re-join the room
@@ -320,12 +334,15 @@
     net = socketNet;
     session = null;
     state = null;
+    promptedForPc = false;
     store.del('dnd.session');
     document.body.classList.remove('your-turn');
     document.title = 'D&D Turn Tracker';
     $('#game').hidden = true;
     $('#lobby').hidden = false;
     $('#net-status').hidden = true;
+    stopMusic();
+    $('#music-dock').hidden = true;
     if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   }
 
@@ -368,6 +385,41 @@
     $('#invite').showModal();
   }
   $('#btn-invite').addEventListener('click', openInvite);
+
+  /* ---------- hosting: move the room to another device ---------- */
+  function openHostDialog() {
+    if (!state || !session || !session.host) return;
+    const targets = state.members.filter((m) => m.online && m.id !== state.you.id && (m.role === 'screen' || m.role === 'dm'));
+    $('#host-error').textContent = '';
+    $('#host-targets').replaceChildren(...(targets.length
+      ? targets.map((m) => h('button', { class: 'btn primary wide', onclick: () => moveHosting(m) },
+        `📡 Move hosting to ${m.role === 'screen' ? '📺' : '👑'} ${m.name}`))
+      : [h('p', { class: 'muted small' }, 'Open the tracker on the tablet and choose "Join as table display", then come back here to hand it the room.')]));
+    $('#host-dialog').showModal();
+  }
+  $('#host-badge').addEventListener('click', openHostDialog);
+  $('#btn-host-close').addEventListener('click', () => $('#host-dialog').close());
+
+  async function moveHosting(member) {
+    if (!net || net.kind !== 'host') return;
+    if (!confirm(`Move the room to ${member.name}? This device will keep playing as before.`)) return;
+    const res = await net.handover(member.id);
+    if (!res.ok) { $('#host-error').textContent = res.error; return; }
+    $('#host-dialog').close();
+    // let go of the room and re-join it as a normal device
+    const { code, name } = session;
+    net.close();
+    store.del('dnd.hostRoom');
+    session = { ...session, host: false };
+    store.set('dnd.session', session);
+    callbacks.onStatus({ online: false, text: `Handing the room to ${member.name}…` });
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const r = await joinRoom(code, name);
+      if (r.ok) { toast(`📡 ${member.name} is now hosting.`); render(); return; }
+      await new Promise((ok) => setTimeout(ok, 2000));
+    }
+    callbacks.onStatus({ online: false, text: `Could not reach ${member.name}. Check that it is still open.` });
+  }
   $('#btn-invite-close').addEventListener('click', () => $('#invite').close());
 
   $('#btn-share').addEventListener('click', async () => {
@@ -399,9 +451,16 @@
   /* ------------------------------------------------------------ */
   $('#btn-next').addEventListener('click', () => act('turn:next'));
   $('#btn-prev').addEventListener('click', () => act('turn:prev'));
-  $('#btn-start').addEventListener('click', () => act('combat:start'));
+  $('#btn-start').addEventListener('click', () => act('combat:start', { roll: true }));
+  $('#btn-start-keep').addEventListener('click', () => act('combat:start', { roll: false }));
+  $('#btn-skip-roll').addEventListener('click', () => {
+    const r = state && state.combat.rollers[0];
+    if (r && confirm(`Roll initiative automatically for ${r.name}?`)) act('initiative:skip');
+  });
+  $('#btn-roll-init').addEventListener('click', () => openInitiative(myRollIds(), { prompt: true }));
   $('#btn-end').addEventListener('click', () => {
-    if (confirm('End combat? The turn order will reset.')) act('combat:end');
+    const rolling = state && state.combat.phase === 'rolling';
+    if (confirm(rolling ? 'Cancel the initiative round?' : 'End combat? The turn order will reset.')) act('combat:end');
   });
   $('#btn-add-enemy').addEventListener('click', () => openEditor('enemy'));
   $('#btn-add-boss').addEventListener('click', () => openEditor('enemy', null, { boss: true }));
@@ -414,7 +473,7 @@
   const isDm = () => state && state.you.role === 'dm';
   const isScreen = () => state && state.you.role === 'screen';
   const byId = (id) => state && state.combatants.find((c) => c.id === id);
-  const fmtInit = (n) => String(n);
+  const fmtInit = (n) => (n === null || n === undefined ? '?' : String(n));
 
   function render() {
     if (!state) return;
@@ -437,13 +496,17 @@
     renderDmPanel();
     renderDisplay();
     renderBossBar($('#boss-bar'), { big: false });
+    renderMap();
+    renderMusic();
     renderConditionsDialog();
     renderMembers();
     renderLog();
 
     if (!dm && !screen && !promptedForPc && !state.combatants.some((c) => c.mine && c.type === 'pc')) {
       promptedForPc = true;
-      openEditor('pc');
+      // saved characters? offer them first, otherwise start a new one
+      if (loadParties().length) openParties();
+      else openEditor('pc');
     }
   }
 
@@ -462,7 +525,14 @@
     }
     if (!state.yourTurn) lastAlertSeq = null;
 
-    if (!combat.active) {
+    const rolling = combat.phase === 'rolling';
+    if (rolling) {
+      const [first, ...rest] = combat.rollers;
+      $('#turn-round').textContent = '🎲 Rolling initiative';
+      $('#turn-name').textContent = state.yourRoll
+        ? 'Your turn to enter initiative!'
+        : first ? `Waiting for ${first.role === 'dm' ? 'the DM' : first.name}…${rest.length ? ` (then ${rest.map((r) => r.name).join(', ')})` : ''}` : 'Starting…';
+    } else if (!combat.active) {
       $('#turn-round').textContent = 'Out of combat';
       $('#turn-name').textContent = dm ? 'Add enemies, then start combat.' : 'Waiting for the DM to start combat…';
     } else {
@@ -476,8 +546,23 @@
       }
     }
 
-    $('#btn-start').hidden = !dm || combat.active;
-    $('#btn-end').hidden = !dm || !combat.active;
+    $('#btn-start').hidden = !dm || combat.active || rolling;
+    $('#btn-start-keep').hidden = !dm || combat.active || rolling || !state.combatants.some((c) => c.initiative !== null && !c.lair);
+    $('#btn-end').hidden = !dm || !(combat.active || rolling);
+    $('#btn-end').textContent = rolling ? 'Cancel' : 'End combat';
+    $('#btn-roll-init').hidden = !(rolling && state.yourRoll);
+    $('#btn-skip-roll').hidden = !(dm && rolling && !state.yourRoll && combat.rollers.length);
+
+    // initiative round: prompt this device when it's its turn to enter numbers
+    if (rolling && state.yourRoll && combat.seq !== lastRollSeq) {
+      lastRollSeq = combat.seq;
+      turnAlert();
+      openInitiative(myRollIds(), { prompt: true });
+    }
+    if (!rolling || !state.yourRoll) {
+      lastRollSeq = null;
+      if (initDlg.open && initPrompt) initDlg.close();
+    }
     $('#btn-prev').hidden = !dm || !combat.active;
     $('#btn-next').hidden = !combat.active || !(dm || state.yourTurn);
     $('#btn-next').textContent = state.yourTurn ? 'End my turn ▶' : 'Next turn ▶';
@@ -486,6 +571,63 @@
   function hpClass(pct) {
     return pct <= 25 ? 'low' : pct <= 50 ? 'mid' : '';
   }
+
+  function initTitle(c) {
+    if (c.lair) return 'Lair actions: initiative 20';
+    if (!c.needsRoll) return `Acts right after ${c.leaderName || 'its leader'}`;
+    if (c.initiative === null) return 'Initiative not rolled yet';
+    const b = c.initBonus || 0;
+    return c.initRoll !== null && c.initRoll !== undefined ? `Roll ${c.initRoll} ${b < 0 ? '−' : '+'} ${Math.abs(b)} = ${c.initiative}` : `Initiative ${c.initiative}`;
+  }
+
+  /* ---------- initiative dialog ---------- */
+  const initDlg = $('#init-dialog');
+  let initPrompt = false;
+
+  /** My creatures that roll initiative (the DM rolls for every enemy). */
+  function myRollIds() {
+    return state.combatants.filter((c) => c.mine && c.needsRoll && (isDm() ? c.type === 'enemy' : true)).map((c) => c.id);
+  }
+
+  function openInitiative(ids, { prompt = false } = {}) {
+    if (!ids.length) return;
+    initPrompt = prompt;
+    $('#init-title').textContent = prompt ? '🎲 Roll for initiative!' : '🎲 Initiative';
+    $('#init-error').textContent = '';
+    $('#init-rows').replaceChildren(...ids.map((id) => {
+      const c = byId(id);
+      if (!c) return null;
+      const bonus = c.initBonus || 0;
+      const total = h('span', { class: 'init-total' }, '');
+      const input = h('input', { type: 'number', inputmode: 'numeric', placeholder: 'd20', 'data-id': c.id, value: c.initRoll ?? '', 'aria-label': `d20 roll for ${c.name}` });
+      const show = () => { total.textContent = input.value === '' ? '' : `= ${Number(input.value) + bonus}`; };
+      input.addEventListener('input', show);
+      show();
+      return h('div', { class: 'init-row' },
+        h('span', { class: 'init-name' }, c.name, h('small', { class: 'muted' }, ` ${bonus < 0 ? '−' : '+'}${Math.abs(bonus)}`)),
+        input,
+        h('button', { type: 'button', class: 'btn ghost small', title: 'Roll a d20', onclick: () => { input.value = 1 + Math.floor(Math.random() * 20); show(); } }, '🎲'),
+        total);
+    }).filter(Boolean));
+    if (!initDlg.open) initDlg.showModal();
+    const first = initDlg.querySelector('input[data-id]');
+    if (first) first.focus();
+  }
+  $('#btn-init-cancel').addEventListener('click', () => initDlg.close());
+  $('#btn-init-auto').addEventListener('click', () => {
+    for (const input of initDlg.querySelectorAll('input[data-id]')) {
+      if (input.value === '') { input.value = 1 + Math.floor(Math.random() * 20); input.dispatchEvent(new Event('input')); }
+    }
+  });
+  $('#init-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const inputs = [...initDlg.querySelectorAll('input[data-id]')];
+    const missing = inputs.find((i) => i.value === '');
+    if (missing) { $('#init-error').textContent = 'Enter a roll for everyone (or use 🎲 Roll for me).'; missing.focus(); return; }
+    const res = await emit('initiative:set', { rolls: inputs.map((i) => ({ id: i.dataset.id, roll: i.value })) });
+    if (!res.ok) { $('#init-error').textContent = res.error; return; }
+    initDlg.close();
+  });
 
   /* ---------- conditions: bar colors + chips ---------- */
   const MAGIC_RE = /mana|spell|slot|magic|\bki\b|sorcery|arcan/i;
@@ -571,7 +713,7 @@
   }
 
   function quickHp(c, { allowDamage, allowHeal }) {
-    const input = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}` });
+    const input = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}`, 'data-hp-for': c.id });
     const go = async (mode) => {
       const amount = Number(input.value);
       if (!amount || amount < 1) { input.focus(); return; }
@@ -597,6 +739,9 @@
   function renderOrder() {
     const dm = isDm();
     const list = $('#order');
+    // keep half-typed HP amounts (and the focus) when another device's update redraws the list
+    const typed = new Map([...list.querySelectorAll('input[data-hp-for]')].filter((i) => i.value !== '').map((i) => [i.dataset.hpFor, i.value]));
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.hpFor : null;
     list.replaceChildren();
     const items = state.combatants;
     $('#order-empty').hidden = items.length > 0;
@@ -621,6 +766,7 @@
       } else if (c.mine) {
         actions.push(...quickHp(c, { allowDamage: true, allowHeal: true }));
         actions.push(h('button', { class: 'btn ghost small', onclick: () => openEditor(c.type, c) }, '✏️ Edit'));
+        if (c.type === 'companion') actions.push(reserveButton(c));
       } else if (isScreen()) {
         // the table screen only displays
       } else if (!dm && c.type === 'enemy' && !c.defeated) {
@@ -639,15 +785,18 @@
       }
 
       const card = h('li', {
-        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
+        class: ['card', c.type, isCur && 'current', c.defeated && 'defeated', c.hidden && 'is-hidden', c.mine && !dm && 'mine', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon', c.reserve && 'reserve'].filter(Boolean).join(' '),
         'data-id': c.id,
       },
-        h('div', { class: 'init', title: 'Initiative' }, fmtInit(c.initiative)),
+        c.mine && c.needsRoll && !isScreen()
+          ? h('button', { class: `init init-btn${c.initiative === null ? ' unrolled' : ''}`, title: initTitle(c), 'aria-label': `Initiative for ${c.name}`, onclick: () => openInitiative([c.id]) }, fmtInit(c.initiative))
+          : h('div', { class: `init${c.initiative === null ? ' unrolled' : ''}`, title: initTitle(c) }, fmtInit(c.initiative)),
         h('div', { class: 'c-main' },
           h('div', { class: 'c-title' },
             h('span', { class: 'c-name' }, c.lair ? `🏰 ${c.name}` : c.name),
             c.boss ? h('span', { class: 'badge boss-b' }, '👑 Boss') : h('span', { class: `badge ${c.type}` }, typeLabel),
             c.hidden && h('span', { class: 'badge hidden-b' }, 'Hidden'),
+            c.reserve && h('span', { class: 'badge reserve-b', title: 'Not in the turn order until it joins the battle' }, '💤 Reserve'),
             c.defeated && h('span', { class: 'badge' }, c.type === 'enemy' ? '💀 Defeated' : '0 HP')),
           sub.length ? h('div', { class: 'c-sub' }, sub.join(' · ')) : null),
         c.lair ? h('span', {}) : h('div', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC')),
@@ -659,8 +808,31 @@
       list.append(card);
     }
 
+    for (const input of list.querySelectorAll('input[data-hp-for]')) {
+      if (typed.has(input.dataset.hpFor)) input.value = typed.get(input.dataset.hpFor);
+      if (focused && input.dataset.hpFor === focused) input.focus({ preventScroll: true });
+    }
     const cur = list.querySelector('.card.current');
     if (cur && state.yourTurn) cur.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  /** 💤 Reserve / ⚔️ Join battle for friendly NPCs (owner or DM). */
+  function reserveButton(c) {
+    if (c.type !== 'companion' || !c.mine) return null;
+    return h('button', {
+      class: `btn small ${c.reserve ? 'accent' : 'ghost'}`,
+      title: c.reserve ? 'Bring it into the fight' : 'Keep it out of the turn order until needed',
+      onclick: () => toggleReserve(c),
+    }, c.reserve ? '⚔️ Join battle' : '💤 Reserve');
+  }
+
+  async function toggleReserve(c) {
+    const res = await act('combatant:reserve', { id: c.id, reserve: !c.reserve });
+    if (!res.ok || !c.reserve) return;
+    // joining a running fight without an initiative yet: ask the owner for the roll
+    // (the reply can arrive before the new room state, so don't rely on its reserve/needsRoll flags here)
+    const fresh = byId(c.id);
+    if (state.combat.active && fresh && fresh.initiative === null) openInitiative([c.id]);
   }
 
   function miniCard(c, emptyText, emptyBtn, type) {
@@ -673,8 +845,10 @@
     return h('div', { class: 'mini' },
       h('div', {},
         h('div', {}, h('strong', {}, c.name), ' ', h('span', { class: 'muted' }, [c.cls, c.level ? `Lv ${c.level}` : ''].filter(Boolean).join(' '))),
-        h('div', { class: 'muted' }, hp)),
-      h('button', { class: 'btn ghost small', onclick: () => openEditor(type, c) }, '✏️ Edit'));
+        h('div', { class: 'muted' }, c.reserve ? `💤 In reserve · ${hp}` : hp)),
+      h('span', { class: 'mini-actions' },
+        reserveButton(c),
+        h('button', { class: 'btn ghost small', onclick: () => openEditor(type, c) }, '✏️ Edit')));
   }
 
   function renderPlayerPanel() {
@@ -682,9 +856,209 @@
     if (isDm() || isScreen()) { panel.hidden = true; return; }
     panel.hidden = false;
     const pc = state.combatants.find((c) => c.mine && c.type === 'pc');
-    const comp = state.combatants.find((c) => c.mine && c.type === 'companion');
+    const comps = state.combatants.filter((c) => c.mine && c.type === 'companion');
     $('#my-pc').replaceChildren(miniCard(pc, 'No character yet.', 'Create character', 'pc'));
-    $('#my-companion').replaceChildren(miniCard(comp, 'Friendly NPC (max 1).', '+ Add NPC', 'companion'));
+    $('#my-companion').replaceChildren(
+      ...comps.map((c) => miniCard(c, '', '', 'companion')),
+      comps.length < MAX_COMPANIONS
+        ? miniCard(null, `Friendly NPCs: ${comps.length}/${MAX_COMPANIONS}`, '+ Add NPC', 'companion')
+        : h('p', { class: 'muted small' }, `Friendly NPCs: ${MAX_COMPANIONS}/${MAX_COMPANIONS} (the most you can have)`));
+    $('#btn-party-save').disabled = !pc;
+  }
+
+  /* ---------- saved characters ("preloads") ---------- */
+  const MAX_COMPANIONS = 3;
+  const PARTY_KEY = 'dnd.myParties';
+  const partyDlg = $('#party-dialog');
+
+  function loadParties() {
+    const v = store.get(PARTY_KEY, []);
+    return Array.isArray(v) ? v.filter((p) => p && p.pc && typeof p.pc.name === 'string') : [];
+  }
+  function saveParties(list) {
+    store.set(PARTY_KEY, list.slice(0, 200));
+  }
+
+  /** What gets saved of a creature: its sheet, not its current HP or effects. */
+  function snapshot(c) {
+    return {
+      name: c.name, cls: c.cls || '', level: c.level ?? 1, hpMax: c.hpMax, ac: c.ac, initBonus: c.initBonus || 0, reserve: Boolean(c.reserve),
+      stats: (c.stats || []).map((st) => (typeof st.max === 'number' ? { key: st.key, max: st.max, value: st.max, color: st.color, refill: st.refill } : { key: st.key, value: st.value })),
+    };
+  }
+
+  $('#btn-party-save').addEventListener('click', () => {
+    const pc = state.combatants.find((c) => c.mine && c.type === 'pc');
+    if (!pc) return;
+    const preset = {
+      pc: snapshot(pc),
+      companions: state.combatants.filter((c) => c.mine && c.type === 'companion').map(snapshot),
+      savedAt: Date.now(),
+    };
+    saveParties([...loadParties().filter((p) => p.pc.name.toLowerCase() !== pc.name.toLowerCase()), preset]);
+    toast(`💾 ${pc.name}${preset.companions.length ? ` and ${preset.companions.length} NPC(s)` : ''} saved on this device.`);
+  });
+
+  /** Bring a saved party into this room: update what you already have, add the rest (full HP). */
+  async function useParty(preset) {
+    const mine = state.combatants.filter((c) => c.mine);
+    const pc = mine.find((c) => c.type === 'pc');
+    const save = (type, t, existing) => emit('combatant:save', {
+      combatant: { ...t, id: existing ? existing.id : undefined, type, hp: t.hpMax, stats: t.stats },
+    });
+    let res = await save('pc', preset.pc, pc);
+    if (!res.ok) { toast(res.error, true); return; }
+    let skipped = 0;
+    const comps = mine.filter((c) => c.type === 'companion');
+    let count = comps.length;
+    for (const t of preset.companions || []) {
+      const same = comps.find((c) => c.name.toLowerCase() === String(t.name).toLowerCase());
+      if (!same && count >= MAX_COMPANIONS) { skipped++; continue; }
+      res = await save('companion', t, same);
+      if (res.ok && !same) count++;
+      if (!res.ok) skipped++;
+    }
+    partyDlg.close();
+    toast(`📂 ${preset.pc.name} is ready${skipped ? ` (${skipped} NPC(s) skipped: max ${MAX_COMPANIONS})` : ''}.`);
+  }
+
+  function renderParties() {
+    const list = loadParties().sort((a, b) => b.savedAt - a.savedAt);
+    $('#party-list').replaceChildren(...(list.length ? list.map((p) => h('div', { class: 'lib-row mine' },
+      h('div', { class: 'lib-main' },
+        h('div', { class: 'lib-name' }, p.pc.name),
+        h('div', { class: 'muted small' }, [p.pc.cls, p.pc.level ? `Lv ${p.pc.level}` : '', `HP ${p.pc.hpMax}`, `AC ${p.pc.ac}`].filter(Boolean).join(' · ')
+          + (p.companions && p.companions.length ? ` · with ${p.companions.map((c) => c.name).join(', ')}` : ''))),
+      h('button', { class: 'btn ghost tiny', title: `Delete ${p.pc.name}`, onclick: () => {
+        if (!confirm(`Delete the saved ${p.pc.name}?`)) return;
+        saveParties(loadParties().filter((x) => x.pc.name !== p.pc.name));
+        renderParties();
+      } }, '🗑'),
+      h('button', { class: 'btn primary small', onclick: () => useParty(p) }, 'Use'))) : [h('p', { class: 'muted small' }, 'Nothing saved yet. Create your character, then tap 💾 Save party.')]));
+  }
+  function openParties() {
+    renderParties();
+    if (!partyDlg.open) partyDlg.showModal();
+  }
+  $('#btn-party-open').addEventListener('click', openParties);
+  $('#btn-party-close').addEventListener('click', () => partyDlg.close());
+  $('#btn-party-new').addEventListener('click', () => { partyDlg.close(); openEditor('pc'); });
+  $('#btn-party-export').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({ type: 'dnd-turn-tracker-characters', parties: loadParties() }, null, 2)], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: 'my-characters.json' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  });
+  $('#party-import').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const incoming = (Array.isArray(data) ? data : data.parties || []).filter((p) => p && p.pc && typeof p.pc.name === 'string');
+      const byName = new Map(loadParties().map((p) => [p.pc.name.toLowerCase(), p]));
+      for (const p of incoming) byName.set(p.pc.name.toLowerCase(), { savedAt: Date.now(), companions: [], ...p });
+      saveParties([...byName.values()]);
+      toast(`Imported ${incoming.length} character(s).`);
+      renderParties();
+    } catch {
+      toast('That file is not a character list.', true);
+    }
+  });
+
+  /* ---------- DM music (YouTube / Spotify), local to the DM's device ---------- */
+  const MUSIC_KEY = 'dnd.music';
+  const music = Object.assign({ saved: [], current: '' }, store.get(MUSIC_KEY, {}));
+  let musicShown = null;
+
+  /** Turn a YouTube or Spotify link into its embeddable player URL (null if not recognised). */
+  function musicEmbed(link) {
+    let u;
+    const spUri = String(link).trim().match(/^spotify:(playlist|album|track|artist|episode|show):([A-Za-z0-9]+)$/);
+    if (spUri) return { kind: 'spotify', src: `https://open.spotify.com/embed/${spUri[1]}/${spUri[2]}`, height: 152 };
+    try { u = new URL(String(link).trim()); } catch { return null; }
+    const host = u.hostname.replace(/^www\.|^m\.|^music\./, '');
+    if (host === 'open.spotify.com') {
+      const m = u.pathname.match(/^\/(?:intl-[a-z-]+\/)?(?:embed\/)?(playlist|album|track|artist|episode|show)\/([A-Za-z0-9]+)/);
+      return m ? { kind: 'spotify', src: `https://open.spotify.com/embed/${m[1]}/${m[2]}`, height: 152 } : null;
+    }
+    if (host === 'youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
+      const list = u.searchParams.get('list');
+      let id = host === 'youtu.be' ? u.pathname.slice(1) : u.searchParams.get('v');
+      const path = u.pathname.match(/^\/(?:embed|shorts|live)\/([\w-]{6,})/);
+      if (!id && path) id = path[1];
+      if (id && !/^[\w-]{6,}$/.test(id)) id = null;
+      if (list && !/^[\w-]+$/.test(list)) return null;
+      const base = 'https://www.youtube-nocookie.com/embed/';
+      if (id) return { kind: 'youtube', src: `${base}${id}?rel=0&loop=1&${list ? `list=${list}` : `playlist=${id}`}`, height: 180 };
+      if (list) return { kind: 'youtube', src: `${base}videoseries?rel=0&loop=1&list=${list}`, height: 180 };
+    }
+    return null;
+  }
+
+  function showMusic(link) {
+    const e = link ? musicEmbed(link) : null;
+    musicShown = e ? link : null;
+    $('#music-player').replaceChildren(e
+      ? h('iframe', {
+        src: e.src, height: String(e.height), title: 'Music player', loading: 'eager', referrerpolicy: 'strict-origin-when-cross-origin',
+        allow: 'autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture',
+      })
+      : h('p', { class: 'muted small' }, 'Paste a YouTube or Spotify link below.'));
+    renderMusicSaved();
+  }
+  function stopMusic() {
+    if (musicShown) showMusic(null);
+  }
+  function persistMusic() {
+    store.set(MUSIC_KEY, music);
+  }
+  function renderMusicSaved() {
+    $('#music-saved').replaceChildren(...music.saved.map((m) => h('span', { class: `music-chip${m.url === musicShown ? ' playing' : ''}` },
+      h('button', { type: 'button', title: m.url, onclick: () => { music.current = m.url; persistMusic(); showMusic(m.url); } }, `▶ ${m.name}`),
+      h('button', { type: 'button', 'aria-label': `Remove ${m.name}`, onclick: () => {
+        music.saved = music.saved.filter((x) => x !== m);
+        persistMusic();
+        renderMusicSaved();
+      } }, '✕'))));
+  }
+  function readMusicForm() {
+    const url = $('#music-url').value.trim();
+    if (!musicEmbed(url)) { toast('Paste a YouTube or Spotify link (video, playlist, album…).', true); return null; }
+    return { url, name: $('#music-name').value.trim() || (url.includes('spotify') ? 'Spotify' : 'YouTube') };
+  }
+  $('#music-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const m = readMusicForm();
+    if (!m) return;
+    music.current = m.url;
+    persistMusic();
+    showMusic(m.url);
+  });
+  $('#btn-music-save').addEventListener('click', () => {
+    const m = readMusicForm();
+    if (!m) return;
+    music.saved = [...music.saved.filter((x) => x.url !== m.url), m].slice(-30);
+    persistMusic();
+    $('#music-url').value = '';
+    $('#music-name').value = '';
+    renderMusicSaved();
+    toast(`💾 "${m.name}" saved.`);
+  });
+  $('#btn-music-toggle').addEventListener('click', () => {
+    const dock = $('#music-dock');
+    const open = dock.classList.toggle('collapsed') === false;
+    $('#btn-music-toggle').setAttribute('aria-expanded', String(open));
+    $('#btn-music-toggle').textContent = open ? '🎵 Hide' : musicShown ? '🎵 Music ♪' : '🎵 Music';
+    if (open && musicShown === null && music.current) showMusic(music.current);
+  });
+  renderMusicSaved();
+
+  function renderMusic() {
+    const dm = isDm();
+    $('#music-dock').hidden = !dm;
+    if (!dm) stopMusic();
   }
 
   function fillSelect(sel, options, keep) {
@@ -750,10 +1124,160 @@
   }
 
   /* ------------------------------------------------------------ */
+  /* shared map + pen                                              */
+  /* ------------------------------------------------------------ */
+  const PEN_COLORS = { red: '#ff4d4d', yellow: '#ffd84d', white: '#ffffff', cyan: '#3fe0e8', green: '#3fd16b', black: '#111111' };
+
+  /** A 16:9 map box (website or image) with a drawing layer on top. */
+  function createMapView() {
+    let pen = false;
+    let color = 'red';
+    let width = 2;
+    let current = null; // stroke being drawn
+    let pending = []; // drawn here, not yet confirmed by the host
+    let map = { url: '', kind: 'page', strokes: [] };
+    let canDraw = false;
+    let shownUrl = null;
+
+    const frame = h('div', { class: 'map-frame' });
+    const canvas = h('canvas', { class: 'map-ink' });
+    const stage = h('div', { class: 'map-stage' }, frame, canvas);
+    const penBtn = h('button', { type: 'button', class: 'btn ghost small', title: 'Draw on the map' }, '✏️ Pen');
+    const colorBtns = Object.keys(PEN_COLORS).map((c) => h('button', {
+      type: 'button', class: `pen-color${c === color ? ' active' : ''}`, style: `background:${PEN_COLORS[c]}`, title: c, 'aria-label': `${c} pen`,
+      onclick: () => { color = c; colorBtns.forEach((b) => b.classList.toggle('active', b.title === c)); },
+    }));
+    const widthSel = h('select', { 'aria-label': 'Pen size', onchange: (e) => { width = Number(e.target.value); } },
+      h('option', { value: '1' }, 'Thin'), h('option', { value: '2', selected: true }, 'Medium'), h('option', { value: '3' }, 'Thick'));
+    const drawTools = h('span', { class: 'map-draw-tools' }, penBtn, ...colorBtns, widthSel,
+      h('button', { type: 'button', class: 'btn ghost small', title: 'Undo last line', onclick: () => act('map:undo') }, '↶'),
+      h('button', { type: 'button', class: 'btn ghost small', title: 'Clear all drawings', onclick: () => { if (confirm('Clear all drawings?')) act('map:clear'); } }, '🗑'));
+    const fsBtn = h('button', { type: 'button', class: 'btn ghost small', title: 'Full screen' }, '⛶ Full screen');
+    const tools = h('div', { class: 'map-tools' }, fsBtn, drawTools);
+    const note = h('p', { class: 'muted tiny-text map-note' }, 'Blank box? That website doesn\'t allow being shown inside other pages – use a direct image link or the site\'s "embed" link.');
+    const wrap = h('div', { class: 'map-wrap' }, stage, tools, note);
+
+    penBtn.addEventListener('click', () => {
+      pen = !pen;
+      penBtn.classList.toggle('active', pen);
+      canvas.classList.toggle('drawing', pen);
+    });
+    fsBtn.addEventListener('click', () => {
+      const doc = document;
+      if (doc.fullscreenElement || doc.webkitFullscreenElement) { (doc.exitFullscreen || doc.webkitExitFullscreen).call(doc); return; }
+      if (wrap.classList.contains('pseudo-fs')) { wrap.classList.remove('pseudo-fs'); redraw(); return; }
+      const req = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+      if (req) req.call(wrap).catch(() => { wrap.classList.add('pseudo-fs'); redraw(); });
+      else { wrap.classList.add('pseudo-fs'); redraw(); } // e.g. iPhone Safari
+    });
+
+    function point(e) {
+      const r = canvas.getBoundingClientRect();
+      return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+    }
+    canvas.addEventListener('pointerdown', (e) => {
+      if (!pen || !canDraw) return;
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      current = { color, width, points: [point(e)] };
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!current) return;
+      const p = point(e);
+      const last = current.points[current.points.length - 1];
+      if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.004 && current.points.length < 400) {
+        current.points.push(p);
+        redraw();
+      }
+    });
+    const finish = () => {
+      if (!current) return;
+      const stroke = current;
+      current = null;
+      pending.push(stroke);
+      redraw();
+      act('map:stroke', stroke).then(() => { pending = pending.filter((x) => x !== stroke); redraw(); });
+    };
+    canvas.addEventListener('pointerup', finish);
+    canvas.addEventListener('pointercancel', finish);
+
+    function drawStroke(ctx, st, w, hgt) {
+      ctx.strokeStyle = PEN_COLORS[st.color] || PEN_COLORS.red;
+      ctx.lineWidth = Math.max(1.5, (w / 400) * [0, 1.2, 2.4, 4.5][st.width || 2]);
+      ctx.beginPath();
+      st.points.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * hgt) : ctx.moveTo(x * w, y * hgt)));
+      if (st.points.length === 1) ctx.lineTo(st.points[0][0] * w + 0.1, st.points[0][1] * hgt);
+      ctx.stroke();
+    }
+    function redraw() {
+      const r = stage.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      if (!r.width) return;
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 2;
+      for (const st of [...map.strokes, ...pending, ...(current ? [current] : [])]) drawStroke(ctx, st, r.width, r.height);
+    }
+    new ResizeObserver(() => redraw()).observe(stage);
+    document.addEventListener('fullscreenchange', () => setTimeout(redraw, 50));
+
+    function update(next, opts) {
+      map = next;
+      canDraw = opts.canDraw;
+      drawTools.hidden = !canDraw;
+      if (!canDraw && pen) penBtn.click();
+      if (shownUrl !== `${map.kind}|${map.url}`) {
+        shownUrl = `${map.kind}|${map.url}`;
+        frame.replaceChildren(map.kind === 'image'
+          ? h('img', { src: map.url, alt: 'Map', referrerpolicy: 'no-referrer' })
+          : h('iframe', { src: map.url, title: 'Map', referrerpolicy: 'no-referrer', allow: 'fullscreen', loading: 'lazy' }));
+      }
+      note.hidden = map.kind === 'image';
+      redraw();
+    }
+    return { el: wrap, update };
+  }
+
+  const panelMap = createMapView();
+  const displayMap = createMapView();
+  $('#map-panel-view').append(panelMap.el);
+  $('#d-map').append(displayMap.el);
+
+  function renderMap() {
+    const dm = isDm();
+    const m = state.map || { url: '', strokes: [] };
+    const fighting = state.combat.active || state.combat.phase === 'rolling';
+    // DM: always (to set it up and draw); players: while not fighting; the display uses its own big box
+    const showPanel = !isScreen() && (dm || (m.url && !fighting));
+    $('#map-panel').hidden = !showPanel;
+    $('#map-form').hidden = !dm;
+    $('#map-hint').hidden = !dm;
+    $('#map-panel-view').hidden = !m.url;
+    if (showPanel && m.url) panelMap.update(m, { canDraw: state.canMap });
+    if (dm && document.activeElement !== $('#map-url')) $('#map-url').value = m.url || '';
+    const showDisplay = isScreen() && m.url && !fighting;
+    $('#d-map').hidden = !showDisplay;
+    if (showDisplay) displayMap.update(m, { canDraw: state.canMap });
+  }
+
+  $('#map-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = $('#map-url').value.trim();
+    if (!url) return;
+    act('map:set', { url, kind: $('#map-kind').value || undefined });
+  });
+  $('#btn-map-remove').addEventListener('click', () => { if (confirm('Remove the map (and its drawings)?')) act('map:set', { url: '' }); });
+
+  /* ------------------------------------------------------------ */
   /* table display (tablet battle board)                           */
   /* ------------------------------------------------------------ */
   const isAlly = (c) => c.type !== 'enemy';
-  const actsInRound = (c) => !c.hidden && !(c.type === 'enemy' && c.defeated);
+  const actsInRound = (c) => !c.hidden && !c.reserve && !(c.type === 'enemy' && c.defeated);
 
   function sideLabel(c) {
     if (c.lair) return 'Lair actions';
@@ -801,15 +1325,16 @@
 
   function dCard(c, tag) {
     return h('div', {
-      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon'].filter(Boolean).join(' '),
+      class: ['d-card', isAlly(c) ? 'ally' : 'enemy', c.type, tag === 'now' && 'is-now', tag === 'next' && 'is-next', c.defeated && 'defeated', c.boss && 'boss', c.lair && 'lair', c.leader && 'summon', c.reserve && 'reserve'].filter(Boolean).join(' '),
     },
       h('div', { class: 'd-card-head' },
-        h('span', { class: 'init' }, String(c.initiative)),
+        h('span', { class: 'init' }, fmtInit(c.initiative)),
         h('div', { class: 'd-card-title' },
           h('div', { class: 'c-name' }, `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`),
           h('div', { class: 'c-sub' }, [sideLabel(c), c.leaderName ? `🔗 ${c.leaderName}` : '', c.cls, c.level && c.type !== 'enemy' ? `Lv ${c.level}` : ''].filter(Boolean).join(' · '))),
         tag === 'now' && h('span', { class: 'd-tag now' }, 'NOW'),
         tag === 'next' && h('span', { class: 'd-tag next' }, 'NEXT'),
+        c.reserve && h('span', { class: 'd-tag' }, '💤 Reserve'),
         c.defeated && h('span', { class: 'd-tag' }, c.type === 'enemy' ? '💀' : '0 HP'),
         c.lair ? null : h('span', { class: 'c-ac', title: 'Armor Class' }, c.ac === null ? '?' : String(c.ac), h('small', {}, 'AC'))),
       conditionChips(c),
@@ -830,7 +1355,7 @@
     const cur = combat.turnId ? byId(combat.turnId) : null;
     const next = upNext(3);
     const nextId = next[0] && next[0].id;
-    $('#display').classList.toggle('idle', !combat.active);
+    $('#display').classList.toggle('idle', !combat.active && combat.phase !== 'rolling');
 
     // NOW
     const now = $('#d-now');
@@ -851,6 +1376,15 @@
         void now.offsetWidth;
         now.classList.add('pop');
       }
+    } else if (combat.phase === 'rolling') {
+      const [first, ...rest] = combat.rollers;
+      now.className = 'd-now rolling';
+      now.replaceChildren(...[
+        h('div', { class: 'd-round' }, '🎲 Roll for initiative!'),
+        h('div', { class: 'd-now-name' }, first ? `${first.role === 'dm' ? '👑 The DM' : first.name} is rolling…` : 'Starting…'),
+        rest.length ? h('div', { class: 'd-now-sub' }, `Then: ${rest.map((r) => r.name).join(' → ')}`) : null,
+        h('div', { class: 'd-now-sub' }, 'Roll a d20 – the app adds your bonus. The fight starts when everyone has entered their number.'),
+      ].filter(Boolean));
     } else {
       now.replaceChildren(
         h('div', { class: 'd-round' }, combat.active ? `Round ${combat.round}` : 'Out of combat'),
@@ -868,8 +1402,8 @@
     // initiative strip
     const strip = $('#d-strip');
     strip.replaceChildren(...state.combatants.map((c) => h('li', {
-      class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated'].filter(Boolean).join(' '),
-    }, h('b', {}, String(c.initiative)), `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`, (c.conditions || []).length ? h('span', { class: 'chip-conds' }, c.conditions.map((k) => k.emoji).join('')) : null)));
+      class: ['chip-turn', isAlly(c) ? 'ally' : 'enemy', c.type, c.id === combat.turnId && 'is-now', c.id === nextId && 'is-next', c.defeated && 'defeated', c.reserve && 'reserve'].filter(Boolean).join(' '),
+    }, h('b', {}, fmtInit(c.initiative)), `${c.boss ? '👑 ' : c.lair ? '🏰 ' : ''}${c.name}`, (c.conditions || []).length ? h('span', { class: 'chip-conds' }, c.conditions.map((k) => k.emoji).join('')) : null)));
     const curChip = strip.querySelector('.is-now');
     if (curChip) curChip.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
 
@@ -899,7 +1433,8 @@
       })
       : [h('p', { class: 'muted' }, 'No enemies… yet.')]));
     const fighters = enemyList.filter((c) => !c.lair);
-    $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated).length} standing` : '';
+    const benched = allies.filter((c) => c.reserve).length;
+    $('#d-allies-count').textContent = allies.length ? `${allies.filter((c) => !c.defeated && !c.reserve).length} standing${benched ? ` · 💤 ${benched} in reserve` : ''}` : '';
     $('#d-enemies-count').textContent = fighters.length ? `${fighters.filter((c) => !c.defeated).length} left` : '';
     renderBossBar($('#d-boss'), { big: true });
 
@@ -1085,11 +1620,154 @@
     if (res.ok) { condForm.reset(); syncCondForm(); }
   });
 
-  $('#btn-roll').addEventListener('click', () => {
-    const bonus = Number(form.elements.initBonus.value) || 0;
-    const roll = 1 + Math.floor(Math.random() * 20);
-    form.elements.initiative.value = roll + bonus;
-    toast(`🎲 d20 = ${roll}${bonus ? ` ${bonus > 0 ? '+' : '−'} ${Math.abs(bonus)}` : ''} → ${roll + bonus}`);
+  function readStats() {
+    return [...$('#stats').querySelectorAll('.stat-row')].map((r) => ({
+      key: r.querySelector('[data-k]').value,
+      value: r.querySelector('[data-v]').value,
+      max: r.querySelector('[data-max]').value,
+      color: r.querySelector('[data-color]').value || undefined,
+      refill: r.querySelector('[data-refill]').checked,
+    })).filter((st) => st.key || st.value);
+  }
+
+  /** A reusable monster from the editor's current fields (no count, leader or hidden). */
+  function templateFromForm() {
+    const f = form.elements;
+    return {
+      name: f.name.value.trim(),
+      hpMax: Number(f.hpMax.value) || 10,
+      ac: Number(f.ac.value) || 0,
+      initBonus: Number(f.initBonus.value) || 0,
+      boss: f.boss.checked,
+      stats: readStats().map((st) => (st.max === '' ? { key: st.key, value: st.value } : { ...st, max: Number(st.max), value: st.value === '' ? Number(st.max) : Number(st.value) })),
+      savedAt: Date.now(),
+    };
+  }
+
+  const MY_KEY = 'dnd.myMonsters';
+  function loadMyMonsters() {
+    const v = store.get(MY_KEY, []);
+    return Array.isArray(v) ? v.filter((m) => m && typeof m.name === 'string') : [];
+  }
+  function saveMyMonsters(list) {
+    store.set(MY_KEY, list.slice(0, 1000));
+  }
+
+  /* ---------- monster library (DM) ---------- */
+  const libDlg = $('#lib-dialog');
+  let srdMonsters = null;
+
+  async function loadSrd() {
+    if (srdMonsters) return srdMonsters;
+    try {
+      const res = await fetch('data/srd-monsters.json');
+      srdMonsters = (await res.json()).monsters || [];
+    } catch {
+      srdMonsters = [];
+      toast('Could not load the SRD monster list.', true);
+    }
+    return srdMonsters;
+  }
+
+  /** SRD entry -> editor template: Type/CR/Speed as text, Movement and legendary bars. */
+  function srdTemplate(m) {
+    const stats = [
+      { key: 'Type', value: `${m.s} ${m.t}` },
+      { key: 'CR', value: `${m.cr} (${Number(m.xp).toLocaleString()} XP)` },
+      { key: 'Hit dice', value: m.hd },
+      { key: 'Speed', value: m.sp },
+    ];
+    if (m.pp != null) stats.push({ key: 'Passive Perception', value: String(m.pp) });
+    if (m.mv) stats.push({ key: 'Movement', value: m.mv, max: m.mv, color: 'yellow', refill: true });
+    if (m.la) stats.push({ key: 'Legendary actions', value: m.la, max: m.la, color: 'orange', refill: true });
+    if (m.lr) stats.push({ key: 'Legendary resistance', value: m.lr, max: m.lr, color: 'purple' });
+    return { name: m.n, hpMax: m.hp, ac: m.ac, initBonus: m.ib, boss: Boolean(m.la), stats };
+  }
+
+  function crValue(cr) {
+    const [a, b] = String(cr).split('/');
+    return b ? Number(a) / Number(b) : Number(a);
+  }
+
+  async function renderLibrary() {
+    const q = $('#lib-q').value.trim().toLowerCase();
+    const src = $('#lib-src').value;
+    const statOf = (t, key) => ((t.stats || []).find((st) => String(st.key).toLowerCase() === key) || {}).value;
+    const mine = loadMyMonsters().map((t) => {
+      const cr = String(statOf(t, 'cr') || '').split(' ')[0] || undefined;
+      const type = statOf(t, 'type') || '';
+      return {
+        kind: 'mine', name: t.name, cr, template: t,
+        sub: `Saved · ${type ? `${type} · ` : ''}${cr ? `CR ${cr} · ` : ''}AC ${t.ac} · HP ${t.hpMax}${t.boss ? ' · 👑 boss' : ''}`,
+        search: `${t.name} ${type} ${cr ? `cr ${cr}` : ''}`.toLowerCase(),
+      };
+    });
+    const srd = src === 'mine' ? [] : (await loadSrd()).map((m) => ({
+      kind: 'srd', name: m.n, cr: m.cr,
+      sub: `${m.s} ${m.t} · CR ${m.cr} · AC ${m.ac} · HP ${m.hp}${m.la ? ' · 👑 legendary' : ''}`,
+      template: null, raw: m, search: `${m.n} ${m.t} ${m.s} cr ${m.cr}`.toLowerCase(),
+    }));
+    let items = [...(src === 'srd' ? [] : mine), ...srd];
+    const crMatch = q.match(/^cr\s*([\d/.]+)$/);
+    if (crMatch) items = items.filter((i) => i.cr !== undefined && crValue(i.cr) === crValue(crMatch[1]));
+    else if (q) items = items.filter((i) => q.split(/\s+/).every((w) => i.search.includes(w)));
+    const shown = items.slice(0, 80);
+    $('#lib-list').replaceChildren(...(shown.length ? shown.map((i) => h('div', { class: `lib-row ${i.kind}` },
+      h('div', { class: 'lib-main' },
+        h('div', { class: 'lib-name' }, i.kind === 'mine' ? `💾 ${i.name}` : i.name),
+        h('div', { class: 'muted small' }, i.sub)),
+      i.kind === 'mine' ? h('button', { class: 'btn ghost tiny', title: `Delete ${i.name}`, onclick: () => {
+        if (!confirm(`Delete ${i.name} from your monsters?`)) return;
+        saveMyMonsters(loadMyMonsters().filter((t) => t !== i.template && t.name !== i.name));
+        renderLibrary();
+      } }, '🗑') : null,
+      h('button', { class: 'btn primary small', onclick: () => {
+        libDlg.close();
+        openEditor('enemy', null, { template: i.template || srdTemplate(i.raw) });
+      } }, '+ Add'))) : [h('p', { class: 'muted small' }, q ? 'No monsters match.' : 'No monsters yet.')]),
+    items.length > shown.length ? h('p', { class: 'muted small' }, `Showing ${shown.length} of ${items.length} – type to narrow down.`) : null);
+  }
+
+  $('#btn-library').addEventListener('click', () => {
+    $('#lib-q').value = '';
+    libDlg.showModal();
+    renderLibrary();
+    $('#lib-q').focus();
+  });
+  $('#btn-lib-close').addEventListener('click', () => libDlg.close());
+  $('#lib-q').addEventListener('input', () => renderLibrary());
+  $('#lib-src').addEventListener('change', () => renderLibrary());
+  $('#btn-lib-export').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({ type: 'dnd-turn-tracker-monsters', monsters: loadMyMonsters() }, null, 2)], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: 'my-monsters.json' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  });
+  $('#lib-import').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const incoming = (Array.isArray(data) ? data : data.monsters || []).filter((m) => m && typeof m.name === 'string');
+      const byName = new Map(loadMyMonsters().map((m) => [m.name.toLowerCase(), m]));
+      for (const m of incoming) byName.set(m.name.toLowerCase(), m);
+      saveMyMonsters([...byName.values()]);
+      toast(`Imported ${incoming.length} monster(s).`);
+      renderLibrary();
+    } catch {
+      toast('That file is not a monster list.', true);
+    }
+  });
+
+  $('#btn-save-template').addEventListener('click', () => {
+    const t = templateFromForm();
+    if (!t.name) { $('#editor-error').textContent = 'Give the monster a name first.'; return; }
+    const mine = loadMyMonsters().filter((m) => m.name.toLowerCase() !== t.name.toLowerCase());
+    mine.push(t);
+    saveMyMonsters(mine);
+    toast(`💾 ${t.name} saved to your monsters.`);
   });
 
   function fillLeaderSelect(selfId, selected) {
@@ -1119,7 +1797,7 @@
 
     for (const el of form.querySelectorAll('[data-for]')) {
       const tags = el.dataset.for.split(' ');
-      el.hidden = !(tags.includes(type) || (type === 'enemy' && !c && tags.includes('enemy-new')));
+      el.hidden = !(tags.includes(type) || (!c && tags.includes(`${type}-new`)));
     }
 
     const f = form.elements;
@@ -1130,7 +1808,6 @@
       f.hpMax.value = c.hpMax;
       f.hp.value = c.hp;
       f.ac.value = c.ac;
-      f.initiative.value = c.initiative;
       f.initBonus.value = c.initBonus || 0;
       f.hidden.checked = Boolean(c.hidden);
       f.boss.checked = Boolean(c.boss);
@@ -1142,6 +1819,15 @@
       f.boss.checked = Boolean(preset.boss);
       f.followLeader.checked = Boolean(preset.followLeader);
     }
+    if (!c && preset.template) {
+      const t = preset.template;
+      f.name.value = t.name || '';
+      f.hpMax.value = t.hpMax || 10;
+      f.ac.value = t.ac ?? 10;
+      f.initBonus.value = t.initBonus || 0;
+      f.boss.checked = Boolean(t.boss);
+      $('#stats').replaceChildren(...(t.stats || []).map((st) => statRow(st)));
+    }
     if (type === 'enemy') {
       fillLeaderSelect(c ? c.id : null, c ? c.leader : preset.leader);
       if (!c && preset.leader) {
@@ -1150,7 +1836,7 @@
       }
       if (!c && preset.boss) $('#editor-title').textContent = 'Add a boss';
     }
-    $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s)));
+    if (!(preset && preset.template)) $('#stats').replaceChildren(...((c && c.stats) || []).map((s) => statRow(s)));
     $('#btn-delete').hidden = !c;
     dlg.showModal();
     f.name.focus(); // no delayed focus: it could steal typing from another field
@@ -1170,13 +1856,7 @@
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = form.elements;
-    const stats = [...$('#stats').querySelectorAll('.stat-row')].map((r) => ({
-      key: r.querySelector('[data-k]').value,
-      value: r.querySelector('[data-v]').value,
-      max: r.querySelector('[data-max]').value,
-      color: r.querySelector('[data-color]').value || undefined,
-      refill: r.querySelector('[data-refill]').checked,
-    }));
+    const stats = readStats();
     const combatant = {
       id: editing.id || undefined,
       type: editing.type,
@@ -1186,10 +1866,10 @@
       hpMax: f.hpMax.value,
       hp: f.hp.value === '' ? undefined : f.hp.value,
       ac: f.ac.value,
-      initiative: f.initiative.value,
       initBonus: f.initBonus.value,
       count: f.count.value,
       hidden: editing.type === 'enemy' ? f.hidden.checked : undefined,
+      reserve: editing.type === 'companion' && !editing.id ? f.reserve.checked : undefined,
       stats,
     };
     if (editing.type === 'enemy') {

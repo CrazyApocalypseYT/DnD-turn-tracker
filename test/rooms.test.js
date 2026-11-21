@@ -20,12 +20,15 @@ test('room codes are 5 chars and the creator is the DM', () => {
   assert.equal(room.members.p1.role, 'player');
 });
 
-test('players get exactly one character and one friendly NPC', () => {
+test('players get exactly one character and up to 3 friendly NPCs', () => {
   const room = setup();
   g.saveCombatant(room, 'p1', pc('Aria', 15, { stats: [{ key: 'Spell DC', value: '14' }] }));
   assert.throws(() => g.saveCombatant(room, 'p1', pc('Aria 2', 10)), /already have a character/);
   g.saveCombatant(room, 'p1', { type: 'companion', name: 'Wolf', hpMax: 11, ac: 13, initiative: 12 });
-  assert.throws(() => g.saveCombatant(room, 'p1', { type: 'companion', name: 'Hawk', hpMax: 5 }), /one friendly NPC/);
+  g.saveCombatant(room, 'p1', { type: 'companion', name: 'Hawk', hpMax: 5 });
+  g.saveCombatant(room, 'p1', { type: 'companion', name: 'Imp', hpMax: 4 });
+  assert.throws(() => g.saveCombatant(room, 'p1', { type: 'companion', name: 'Owl', hpMax: 1 }), /up to 3 friendly NPCs/);
+  g.saveCombatant(room, 'p2', { type: 'companion', name: 'Bob\'s mule', hpMax: 11 }); // the limit is per player
   assert.throws(() => g.saveCombatant(room, 'p1', { type: 'enemy', name: 'Goblin', hpMax: 7 }), /Only the Dungeon Master/);
   const aria = room.combatants.find((c) => c.name === 'Aria');
   assert.deepEqual(aria.stats, [{ key: 'Spell DC', value: '14' }]);
@@ -375,4 +378,121 @@ test('removing a leader just unlinks its summons; lair actions act on 20 and los
   g.removeCombatant(room, 'dm-secret', lich.id);
   assert.equal(sk.leader, null);
   assert.equal(sk.hp, 13);
+});
+
+test('initiative is entered as a roll; the total adds the bonus and orders the fight', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', { type: 'pc', name: 'Aria', hpMax: 20, initBonus: 3 });
+  assert.equal(aria.initiative, null, 'no initiative until rolled');
+  g.setInitiative(room, 'p1', { rolls: [{ id: aria.id, roll: 14 }] });
+  assert.deepEqual([aria.initRoll, aria.initiative], [14, 17]);
+  g.saveCombatant(room, 'p1', { id: aria.id, name: 'Aria', hpMax: 20, initBonus: 5 });
+  assert.equal(aria.initiative, 19, 'changing the bonus updates the total');
+  assert.throws(() => g.setInitiative(room, 'p2', { rolls: [{ id: aria.id, roll: 3 }] }), /own creatures/);
+  assert.throws(() => g.setInitiative(room, 'p1', { rolls: [{ id: aria.id, roll: 'x' }] }), /Enter a number/);
+  const [bo] = g.saveCombatant(room, 'p2', { type: 'pc', name: 'Bo', hpMax: 20 });
+  assert.equal(g.sortedCombatants(room).at(-1).id, bo.id, 'unrolled creatures go last');
+  assert.equal(g.viewFor(room, 'p2').combatants.find((c) => c.name === 'Bo').initiative, null);
+});
+
+test('starting combat runs an initiative round: DM first, then players in join order, then last order', () => {
+  const room = setup(); // join order: Alice (p1), Bob (p2)
+  const [aria] = g.saveCombatant(room, 'p1', { type: 'pc', name: 'Aria', hpMax: 20, initBonus: 2 });
+  const [wolf] = g.saveCombatant(room, 'p1', { type: 'companion', name: 'Wolf', hpMax: 11 });
+  const [bo] = g.saveCombatant(room, 'p2', { type: 'pc', name: 'Bo', hpMax: 20 });
+  const gobs = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Goblin', hpMax: 7, initBonus: 2, count: 2 });
+  const [lich] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Lich', hpMax: 99 });
+  g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Skeleton', hpMax: 13, leader: lich.id, followLeader: true });
+  const [lair] = g.saveCombatant(room, 'dm-secret', { type: 'enemy', name: 'Lair actions', initiative: 20, lair: true });
+
+  g.startCombat(room, 'dm-secret', { roll: true });
+  const roller = () => g.viewFor(room, 'p1').combat.rollers.map((r) => r.name);
+  assert.equal(room.combat.active, false);
+  assert.deepEqual(roller(), ['Dungeon Master', 'Alice', 'Bob']);
+  assert.equal(g.viewFor(room, 'dm-secret').yourRoll, true);
+  assert.equal(g.viewFor(room, 'p1').yourRoll, false);
+  assert.throws(() => g.nextTurn(room, 'dm-secret'), /Combat has not started/);
+
+  // the DM rolls for the goblins and the lich (not the follower, not the lair)
+  g.setInitiative(room, 'dm-secret', { rolls: [{ id: gobs[0].id, roll: 10 }, { id: gobs[1].id, roll: 5 }] });
+  assert.deepEqual(roller(), ['Dungeon Master', 'Alice', 'Bob'], 'still the DM: the lich has no roll yet');
+  g.setInitiative(room, 'dm-secret', { rolls: [{ id: lich.id, roll: 16 }] });
+  assert.deepEqual(roller(), ['Alice', 'Bob']);
+  assert.equal(g.viewFor(room, 'p1').yourRoll, true);
+  g.setInitiative(room, 'p1', { rolls: [{ id: aria.id, roll: 12 }, { id: wolf.id, roll: 3 }] });
+  g.setInitiative(room, 'p2', { rolls: [{ id: bo.id, roll: 18 }] });
+
+  assert.equal(room.combat.active, true, 'combat starts when everyone has rolled');
+  assert.deepEqual(g.sortedCombatants(room).map((c) => `${c.name} ${g.viewFor(room, 'dm-secret').combatants.find((v) => v.id === c.id).initiative}`),
+    ['Lair actions 20', 'Bo 18', 'Lich 16', 'Skeleton 16', 'Aria 14', 'Goblin 1 12', 'Goblin 2 7', 'Wolf 3']);
+  assert.equal(room.combat.turnId, lair.id);
+
+  // next combat: players go in last combat's order (Bob acted before Alice)
+  g.endCombat(room, 'dm-secret');
+  g.startCombat(room, 'dm-secret', { roll: true });
+  assert.deepEqual(roller(), ['Dungeon Master', 'Bob', 'Alice']);
+  assert.equal(aria.initiative, null, 'rolls reset for the new combat');
+  // the DM can roll automatically for someone who is away
+  g.skipRoller(room, 'dm-secret');
+  assert.deepEqual(roller(), ['Bob', 'Alice']);
+  assert.ok(gobs.every((x) => x.initRoll >= 1 && x.initRoll <= 20));
+  assert.throws(() => g.skipRoller(room, 'p1'), /Only the Dungeon Master/);
+});
+
+test('map: DM or table display set a link and draw; players only look', () => {
+  const room = setup();
+  g.joinRoom(room, 'tab', 'Table', undefined, { screen: true });
+  assert.throws(() => g.setMap(room, 'p1', { url: 'https://example.com/map.png' }), /Only the DM/);
+  assert.throws(() => g.setMap(room, 'dm-secret', { url: 'javascript:alert(1)' }), /http/);
+  g.setMap(room, 'dm-secret', { url: 'https://example.com/maps/cave.PNG?x=1' });
+  assert.equal(room.map.kind, 'image', 'image links are detected');
+  g.setMap(room, 'dm-secret', { url: 'https://example.com/board' });
+  assert.equal(room.map.kind, 'page');
+  g.addStroke(room, 'dm-secret', { color: 'yellow', width: 3, points: [[0.1, 0.2], [2, -1], ['x', 1], [0.33333, 0.5]] });
+  assert.deepEqual(room.map.strokes[0].points, [[0.1, 0.2], [1, 0], [0.3333, 0.5]]);
+  g.addStroke(room, 'tab', { color: 'nope', points: [[0.5, 0.5]] });
+  assert.equal(room.map.strokes[1].color, 'red');
+  assert.throws(() => g.addStroke(room, 'p1', { points: [[0, 0]] }), /Only the DM/);
+  assert.equal(g.viewFor(room, 'p1').map.strokes.length, 2);
+  assert.equal(g.viewFor(room, 'p1').canMap, false);
+  g.undoStroke(room, 'dm-secret');
+  assert.equal(room.map.strokes.length, 1);
+  g.clearStrokes(room, 'tab');
+  assert.equal(room.map.strokes.length, 0);
+  for (let i = 0; i < 230; i++) g.addStroke(room, 'dm-secret', { points: [[0, 0], [1, 1]] });
+  assert.equal(room.map.strokes.length, 200, 'oldest strokes are dropped past the limit');
+});
+
+test('friendly NPCs can wait in reserve: no turns, no initiative roll, until they join the battle', () => {
+  const room = setup();
+  const [aria] = g.saveCombatant(room, 'p1', { type: 'pc', name: 'Aria', hpMax: 20, initiative: 15 });
+  const [wolf] = g.saveCombatant(room, 'p1', { type: 'companion', name: 'Wolf', hpMax: 11, initiative: 18, reserve: true });
+  const [bo] = g.saveCombatant(room, 'p2', { type: 'pc', name: 'Bo', hpMax: 20, initiative: 10 });
+  assert.equal(wolf.reserve, true);
+  assert.throws(() => g.setReserve(room, 'p1', { id: aria.id, reserve: true }), /Only friendly NPCs/);
+  assert.throws(() => g.setReserve(room, 'p2', { id: wolf.id, reserve: false }), /owner or the DM/);
+  assert.equal(g.viewFor(room, 'p2').combatants.find((c) => c.name === 'Wolf').reserve, true, 'everyone sees it is in reserve');
+
+  // turns skip the reserve
+  g.startCombat(room, 'dm-secret');
+  assert.equal(room.combat.turnId, aria.id, 'the wolf (18) waits in reserve');
+  g.nextTurn(room, 'p1');
+  assert.equal(room.combat.turnId, bo.id);
+  // the wolf joins mid-fight: it gets turns again (it already has initiative 18)
+  g.setReserve(room, 'p1', { id: wolf.id, reserve: false });
+  g.nextTurn(room, 'p2');
+  assert.equal(room.combat.turnId, wolf.id, 'new round: wolf (18) acts first');
+  // sent back to reserve on its own turn: the turn passes on
+  g.setReserve(room, 'dm-secret', { id: wolf.id, reserve: true });
+  assert.equal(room.combat.turnId, aria.id);
+  assert.ok(room.log.some((l) => l.text === '⚔️ Wolf joins the battle!'));
+
+  // initiative round: reserve NPCs are not asked to roll
+  g.endCombat(room, 'dm-secret');
+  g.startCombat(room, 'dm-secret', { roll: true });
+  g.setInitiative(room, 'p1', { rolls: [{ id: aria.id, roll: 12 }] });
+  assert.deepEqual(g.viewFor(room, 'p1').combat.rollers.map((r) => r.name), ['Bob'], 'Alice is done without rolling for the wolf');
+  // joining during the initiative round puts the owner back in the queue
+  g.setReserve(room, 'p1', { id: wolf.id, reserve: false });
+  assert.deepEqual(g.viewFor(room, 'p1').combat.rollers.map((r) => r.name), ['Bob', 'Alice']);
 });

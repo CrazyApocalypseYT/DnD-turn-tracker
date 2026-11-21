@@ -48,10 +48,10 @@
         <div class="or">or</div>
         <section>
           <h2>Host a game</h2>
-          <button id="btn-create" class="btn accent wide">👑 Create room – I'm the DM</button>
-          <p class="muted small">You run the enemies from this device.</p>
-          <button id="btn-create-screen" class="btn ghost wide">📺 Host on this device as table display</button>
-          <p class="muted small">E.g. a tablet in the middle of the table: a big battle board with the turn order, allies and enemies, and a QR code. The DM joins from their phone with the DM key.</p>
+          <button id="btn-create-screen" class="btn accent wide">📺 Host on this tablet (table display) – recommended</button>
+          <p class="muted small">The tablet in the middle of the table runs the room and shows the battle board and a QR code. The DM joins from their phone with the DM key and can switch apps or tabs freely.</p>
+          <button id="btn-create" class="btn ghost wide">👑 Host on my device as the DM</button>
+          <p class="muted small">Only if there's no tablet: keep this page open. You can move hosting to a table display later (tap 📡 Hosting).</p>
           <p id="host-hint" class="hint small" hidden>📡 No server needed: the device that creates the room <strong>is</strong> the server. Keep the tracker open and the screen on during the session (it stays awake automatically where supported).</p>
         </section>
       </div>
@@ -69,7 +69,7 @@
           <span class="small">📱 Invite</span>
         </button>
         <span id="role-badge" class="badge"></span>
-        <span id="host-badge" class="badge host" title="This device is the server for this room" hidden>📡 Hosting</span>
+        <button id="host-badge" class="badge host" title="This device is the server for this room – tap for options" hidden>📡 Hosting</button>
         <span id="conn" class="conn" title="Connection"></span>
       </div>
       <div class="top-actions">
@@ -88,7 +88,10 @@
       <div class="turn-actions">
         <button id="btn-prev" class="btn ghost dm-only" hidden>◀ Prev</button>
         <button id="btn-next" class="btn primary" hidden>End turn ▶</button>
-        <button id="btn-start" class="btn accent dm-only" hidden>⚔️ Start combat</button>
+        <button id="btn-roll-init" class="btn accent" hidden>🎲 Enter initiative</button>
+        <button id="btn-skip-roll" class="btn ghost dm-only" hidden title="Roll automatically for whoever is holding things up">⏭ Roll for them</button>
+        <button id="btn-start" class="btn accent dm-only" hidden title="Everyone rolls initiative, DM first">⚔️ Start combat</button>
+        <button id="btn-start-keep" class="btn ghost small dm-only" hidden title="Start with the initiative already entered">Start without rolling</button>
         <button id="btn-end" class="btn danger ghost dm-only" hidden>End combat</button>
       </div>
       <div id="boss-bar" class="boss-bar" hidden></div>
@@ -97,6 +100,7 @@
     <!-- ===================== TABLE DISPLAY (tablet) ===================== -->
     <section id="display" class="display" hidden>
       <div id="d-boss" class="boss-bar d-boss" hidden></div>
+      <div id="d-map" class="d-map" hidden></div>
       <div class="d-top">
         <div id="d-now" class="d-now"></div>
         <div class="d-next-box">
@@ -151,6 +155,10 @@
           <h2>Your party</h2>
           <div id="my-pc"></div>
           <div id="my-companion"></div>
+          <div class="party-tools">
+            <button id="btn-party-save" class="btn ghost small" title="Keep your character and friendly NPCs on this device">💾 Save party</button>
+            <button id="btn-party-open" class="btn ghost small">📂 My characters</button>
+          </div>
         </section>
 
         <!-- deal damage -->
@@ -178,6 +186,7 @@
         <section id="dm-panel" class="panel" hidden>
           <h2>👑 Dungeon Master</h2>
           <button id="btn-add-enemy" class="btn accent wide">+ Add enemies</button>
+          <button id="btn-library" class="btn wide lib-btn">📚 Monster library</button>
           <div class="dm-quick">
             <button id="btn-add-boss" class="btn ghost small">👑 + Boss</button>
             <button id="btn-add-lair" class="btn ghost small" title="A turn at initiative 20 for lair actions">🏰 + Lair actions</button>
@@ -190,6 +199,23 @@
             <span class="muted small">DM key (to continue as DM on another device):</span>
             <code id="dm-key"></code>
           </div>
+        </section>
+
+        <!-- map (DM: set + draw; players: look, out of combat) -->
+        <section id="map-panel" class="panel" hidden>
+          <h2>🗺️ Map</h2>
+          <form id="map-form" class="map-form" hidden>
+            <input id="map-url" type="url" inputmode="url" placeholder="Paste a map link (website or image)" />
+            <select id="map-kind" aria-label="Show as">
+              <option value="">Auto</option>
+              <option value="image">Image</option>
+              <option value="page">Website</option>
+            </select>
+            <button class="btn primary small" type="submit">Show</button>
+            <button id="btn-map-remove" class="btn ghost small" type="button">Remove</button>
+          </form>
+          <p id="map-hint" class="muted small" hidden>The map shows on the table display while not in combat. Turn on ✏️ to draw on it; your drawings appear on every screen.</p>
+          <div id="map-panel-view"></div>
         </section>
 
         <!-- members -->
@@ -237,19 +263,16 @@
           <input name="ac" type="number" inputmode="numeric" min="0" value="10" />
         </label>
         <label class="field">
-          <span>Initiative</span>
-          <div class="with-btn">
-            <input name="initiative" type="number" inputmode="decimal" step="any" value="0" />
-            <button type="button" id="btn-roll" class="btn ghost" title="Roll d20 + initiative bonus">🎲</button>
-          </div>
-        </label>
-        <label class="field">
-          <span>Init. bonus (for 🎲)</span>
+          <span>Initiative bonus</span>
           <input name="initBonus" type="number" inputmode="numeric" value="0" />
         </label>
         <label class="field" data-for="enemy-new">
           <span>How many</span>
           <input name="count" type="number" inputmode="numeric" min="1" max="50" value="1" />
+        </label>
+        <label class="toggle span2" data-for="companion-new">
+          <input type="checkbox" name="reserve" />
+          <span>💤 Starts in reserve – stays out of the fight until you tap "Join battle"</span>
         </label>
         <label class="toggle span2" data-for="enemy">
           <input type="checkbox" name="hidden" />
@@ -298,11 +321,94 @@
       <p id="editor-error" class="error" role="alert"></p>
       <div class="dialog-actions">
         <button type="button" id="btn-delete" class="btn danger ghost">Remove</button>
+        <button type="button" id="btn-save-template" class="btn ghost" data-for="enemy" title="Keep this monster in your library on this device">💾 Save to my monsters</button>
         <span class="spacer"></span>
         <button type="button" id="btn-cancel" class="btn ghost">Cancel</button>
         <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ======================= initiative dialog ======================= -->
+  <dialog id="init-dialog">
+    <form id="init-form">
+      <h2 id="init-title">🎲 Initiative</h2>
+      <p class="muted small">Roll a d20 and type the number you got – your initiative bonus is added for you. Or let the app roll.</p>
+      <div id="init-rows" class="init-rows"></div>
+      <p id="init-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="btn-init-auto" class="btn ghost">🎲 Roll for me</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-init-cancel" class="btn ghost">Later</button>
+        <button type="submit" class="btn primary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ======================= monster library (DM) ======================= -->
+  <dialog id="lib-dialog">
+    <div class="cond-head">
+      <h2>📚 Monster library</h2>
+      <button type="button" id="btn-lib-close" class="btn ghost small">Close</button>
+    </div>
+    <div class="lib-search">
+      <input id="lib-q" type="search" placeholder="Search name, type or CR (e.g. dragon, undead, cr 5)" autocomplete="off" />
+      <select id="lib-src" aria-label="Source">
+        <option value="all">All</option>
+        <option value="srd">SRD 5.1</option>
+        <option value="mine">My monsters</option>
+      </select>
+    </div>
+    <div id="lib-list" class="lib-list"></div>
+    <div class="lib-tools">
+      <button type="button" id="btn-lib-export" class="btn ghost small">⬇️ Export my monsters</button>
+      <label class="btn ghost small file-btn">⬆️ Import<input id="lib-import" type="file" accept="application/json,.json" hidden /></label>
+    </div>
+    <p class="muted tiny-text">Ready-made monsters: the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under CC-BY-4.0 (creativecommons.org/licenses/by/4.0). The full Monster Manual and other books are not free to share: save the monsters you use from your own books with 💾 in the enemy editor. Your monsters are kept on this device; use Export/Import to move them.</p>
+  </dialog>
+
+  <!-- ======================= saved characters (players) ======================= -->
+  <dialog id="party-dialog">
+    <div class="cond-head">
+      <h2>📂 My characters</h2>
+      <button type="button" id="btn-party-close" class="btn ghost small">Close</button>
+    </div>
+    <p class="muted small">Characters and friendly NPCs you saved with 💾 Save party. Using one brings it into this room at full HP with its bars refilled.</p>
+    <div id="party-list" class="lib-list"></div>
+    <div class="lib-tools">
+      <button type="button" id="btn-party-new" class="btn primary small">＋ New character</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-party-export" class="btn ghost small">⬇️ Export</button>
+      <label class="btn ghost small file-btn">⬆️ Import<input id="party-import" type="file" accept="application/json,.json" hidden /></label>
+    </div>
+    <p class="muted tiny-text">Saved on this device only. Use Export/Import to move them to another phone.</p>
+  </dialog>
+
+  <!-- ======================= DM music dock ======================= -->
+  <aside id="music-dock" class="music-dock collapsed" hidden>
+    <button type="button" id="btn-music-toggle" class="music-pill" aria-expanded="false">🎵 Music</button>
+    <div class="music-body">
+      <div id="music-player" class="music-player"><p class="muted small">Paste a YouTube or Spotify link below.</p></div>
+      <form id="music-form" class="music-form">
+        <input id="music-url" type="url" inputmode="url" placeholder="YouTube or Spotify link" />
+        <input id="music-name" maxlength="30" placeholder="Name (e.g. Tavern)" />
+        <button class="btn primary small" type="submit">▶ Play</button>
+        <button id="btn-music-save" class="btn ghost small" type="button" title="Save to your list">💾</button>
+      </form>
+      <div id="music-saved" class="music-saved"></div>
+      <p class="muted tiny-text">Only you (the DM) hear this, on this device – connect it to a speaker. Press play inside the player. Some YouTube videos can't be embedded; Spotify may only play short previews unless you're signed in to Spotify in this browser.</p>
+    </div>
+  </aside>
+
+  <!-- ======================= hosting dialog ======================= -->
+  <dialog id="host-dialog">
+    <div class="cond-head">
+      <h2>📡 This device is hosting</h2>
+      <button type="button" id="btn-host-close" class="btn ghost small">Close</button>
+    </div>
+    <p class="small">The whole room lives in this browser. If this page is closed, or the device sleeps or switches app, everyone waits until it's back. The table display is the best host: it stays on the table with the screen on.</p>
+    <div id="host-targets" class="host-targets"></div>
+    <p id="host-error" class="error" role="alert"></p>
   </dialog>
 
   <!-- ======================= conditions dialog ======================= -->
