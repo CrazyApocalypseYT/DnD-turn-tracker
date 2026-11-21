@@ -155,6 +155,10 @@
           <h2>Your party</h2>
           <div id="my-pc"></div>
           <div id="my-companion"></div>
+          <div class="party-tools">
+            <button id="btn-party-save" class="btn ghost small" title="Keep your character and friendly NPCs on this device">💾 Save party</button>
+            <button id="btn-party-open" class="btn ghost small">📂 My characters</button>
+          </div>
         </section>
 
         <!-- deal damage -->
@@ -358,6 +362,39 @@
     </div>
     <p class="muted tiny-text">Ready-made monsters: the System Reference Document 5.1 by Wizards of the Coast LLC, licensed under CC-BY-4.0 (creativecommons.org/licenses/by/4.0). The full Monster Manual and other books are not free to share: save the monsters you use from your own books with 💾 in the enemy editor. Your monsters are kept on this device; use Export/Import to move them.</p>
   </dialog>
+
+  <!-- ======================= saved characters (players) ======================= -->
+  <dialog id="party-dialog">
+    <div class="cond-head">
+      <h2>📂 My characters</h2>
+      <button type="button" id="btn-party-close" class="btn ghost small">Close</button>
+    </div>
+    <p class="muted small">Characters and friendly NPCs you saved with 💾 Save party. Using one brings it into this room at full HP with its bars refilled.</p>
+    <div id="party-list" class="lib-list"></div>
+    <div class="lib-tools">
+      <button type="button" id="btn-party-new" class="btn primary small">＋ New character</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-party-export" class="btn ghost small">⬇️ Export</button>
+      <label class="btn ghost small file-btn">⬆️ Import<input id="party-import" type="file" accept="application/json,.json" hidden /></label>
+    </div>
+    <p class="muted tiny-text">Saved on this device only. Use Export/Import to move them to another phone.</p>
+  </dialog>
+
+  <!-- ======================= DM music dock ======================= -->
+  <aside id="music-dock" class="music-dock collapsed" hidden>
+    <button type="button" id="btn-music-toggle" class="music-pill" aria-expanded="false">🎵 Music</button>
+    <div class="music-body">
+      <div id="music-player" class="music-player"><p class="muted small">Paste a YouTube or Spotify link below.</p></div>
+      <form id="music-form" class="music-form">
+        <input id="music-url" type="url" inputmode="url" placeholder="YouTube or Spotify link" />
+        <input id="music-name" maxlength="30" placeholder="Name (e.g. Tavern)" />
+        <button class="btn primary small" type="submit">▶ Play</button>
+        <button id="btn-music-save" class="btn ghost small" type="button" title="Save to your list">💾</button>
+      </form>
+      <div id="music-saved" class="music-saved"></div>
+      <p class="muted tiny-text">Only you (the DM) hear this, on this device – connect it to a speaker. Press play inside the player. Some YouTube videos can't be embedded; Spotify may only play short previews unless you're signed in to Spotify in this browser.</p>
+    </div>
+  </aside>
 
   <!-- ======================= hosting dialog ======================= -->
   <dialog id="host-dialog">

@@ -334,12 +334,15 @@
     net = socketNet;
     session = null;
     state = null;
+    promptedForPc = false;
     store.del('dnd.session');
     document.body.classList.remove('your-turn');
     document.title = 'D&D Turn Tracker';
     $('#game').hidden = true;
     $('#lobby').hidden = false;
     $('#net-status').hidden = true;
+    stopMusic();
+    $('#music-dock').hidden = true;
     if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   }
 
@@ -494,13 +497,16 @@
     renderDisplay();
     renderBossBar($('#boss-bar'), { big: false });
     renderMap();
+    renderMusic();
     renderConditionsDialog();
     renderMembers();
     renderLog();
 
     if (!dm && !screen && !promptedForPc && !state.combatants.some((c) => c.mine && c.type === 'pc')) {
       promptedForPc = true;
-      openEditor('pc');
+      // saved characters? offer them first, otherwise start a new one
+      if (loadParties().length) openParties();
+      else openEditor('pc');
     }
   }
 
@@ -707,7 +713,7 @@
   }
 
   function quickHp(c, { allowDamage, allowHeal }) {
-    const input = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}` });
+    const input = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'HP', 'aria-label': `Amount for ${c.name}`, 'data-hp-for': c.id });
     const go = async (mode) => {
       const amount = Number(input.value);
       if (!amount || amount < 1) { input.focus(); return; }
@@ -733,6 +739,9 @@
   function renderOrder() {
     const dm = isDm();
     const list = $('#order');
+    // keep half-typed HP amounts (and the focus) when another device's update redraws the list
+    const typed = new Map([...list.querySelectorAll('input[data-hp-for]')].filter((i) => i.value !== '').map((i) => [i.dataset.hpFor, i.value]));
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.hpFor : null;
     list.replaceChildren();
     const items = state.combatants;
     $('#order-empty').hidden = items.length > 0;
@@ -797,6 +806,10 @@
       list.append(card);
     }
 
+    for (const input of list.querySelectorAll('input[data-hp-for]')) {
+      if (typed.has(input.dataset.hpFor)) input.value = typed.get(input.dataset.hpFor);
+      if (focused && input.dataset.hpFor === focused) input.focus({ preventScroll: true });
+    }
     const cur = list.querySelector('.card.current');
     if (cur && state.yourTurn) cur.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
@@ -820,9 +833,209 @@
     if (isDm() || isScreen()) { panel.hidden = true; return; }
     panel.hidden = false;
     const pc = state.combatants.find((c) => c.mine && c.type === 'pc');
-    const comp = state.combatants.find((c) => c.mine && c.type === 'companion');
+    const comps = state.combatants.filter((c) => c.mine && c.type === 'companion');
     $('#my-pc').replaceChildren(miniCard(pc, 'No character yet.', 'Create character', 'pc'));
-    $('#my-companion').replaceChildren(miniCard(comp, 'Friendly NPC (max 1).', '+ Add NPC', 'companion'));
+    $('#my-companion').replaceChildren(
+      ...comps.map((c) => miniCard(c, '', '', 'companion')),
+      comps.length < MAX_COMPANIONS
+        ? miniCard(null, `Friendly NPCs: ${comps.length}/${MAX_COMPANIONS}`, '+ Add NPC', 'companion')
+        : h('p', { class: 'muted small' }, `Friendly NPCs: ${MAX_COMPANIONS}/${MAX_COMPANIONS} (the most you can have)`));
+    $('#btn-party-save').disabled = !pc;
+  }
+
+  /* ---------- saved characters ("preloads") ---------- */
+  const MAX_COMPANIONS = 3;
+  const PARTY_KEY = 'dnd.myParties';
+  const partyDlg = $('#party-dialog');
+
+  function loadParties() {
+    const v = store.get(PARTY_KEY, []);
+    return Array.isArray(v) ? v.filter((p) => p && p.pc && typeof p.pc.name === 'string') : [];
+  }
+  function saveParties(list) {
+    store.set(PARTY_KEY, list.slice(0, 200));
+  }
+
+  /** What gets saved of a creature: its sheet, not its current HP or effects. */
+  function snapshot(c) {
+    return {
+      name: c.name, cls: c.cls || '', level: c.level ?? 1, hpMax: c.hpMax, ac: c.ac, initBonus: c.initBonus || 0,
+      stats: (c.stats || []).map((st) => (typeof st.max === 'number' ? { key: st.key, max: st.max, value: st.max, color: st.color, refill: st.refill } : { key: st.key, value: st.value })),
+    };
+  }
+
+  $('#btn-party-save').addEventListener('click', () => {
+    const pc = state.combatants.find((c) => c.mine && c.type === 'pc');
+    if (!pc) return;
+    const preset = {
+      pc: snapshot(pc),
+      companions: state.combatants.filter((c) => c.mine && c.type === 'companion').map(snapshot),
+      savedAt: Date.now(),
+    };
+    saveParties([...loadParties().filter((p) => p.pc.name.toLowerCase() !== pc.name.toLowerCase()), preset]);
+    toast(`💾 ${pc.name}${preset.companions.length ? ` and ${preset.companions.length} NPC(s)` : ''} saved on this device.`);
+  });
+
+  /** Bring a saved party into this room: update what you already have, add the rest (full HP). */
+  async function useParty(preset) {
+    const mine = state.combatants.filter((c) => c.mine);
+    const pc = mine.find((c) => c.type === 'pc');
+    const save = (type, t, existing) => emit('combatant:save', {
+      combatant: { ...t, id: existing ? existing.id : undefined, type, hp: t.hpMax, stats: t.stats },
+    });
+    let res = await save('pc', preset.pc, pc);
+    if (!res.ok) { toast(res.error, true); return; }
+    let skipped = 0;
+    const comps = mine.filter((c) => c.type === 'companion');
+    let count = comps.length;
+    for (const t of preset.companions || []) {
+      const same = comps.find((c) => c.name.toLowerCase() === String(t.name).toLowerCase());
+      if (!same && count >= MAX_COMPANIONS) { skipped++; continue; }
+      res = await save('companion', t, same);
+      if (res.ok && !same) count++;
+      if (!res.ok) skipped++;
+    }
+    partyDlg.close();
+    toast(`📂 ${preset.pc.name} is ready${skipped ? ` (${skipped} NPC(s) skipped: max ${MAX_COMPANIONS})` : ''}.`);
+  }
+
+  function renderParties() {
+    const list = loadParties().sort((a, b) => b.savedAt - a.savedAt);
+    $('#party-list').replaceChildren(...(list.length ? list.map((p) => h('div', { class: 'lib-row mine' },
+      h('div', { class: 'lib-main' },
+        h('div', { class: 'lib-name' }, p.pc.name),
+        h('div', { class: 'muted small' }, [p.pc.cls, p.pc.level ? `Lv ${p.pc.level}` : '', `HP ${p.pc.hpMax}`, `AC ${p.pc.ac}`].filter(Boolean).join(' · ')
+          + (p.companions && p.companions.length ? ` · with ${p.companions.map((c) => c.name).join(', ')}` : ''))),
+      h('button', { class: 'btn ghost tiny', title: `Delete ${p.pc.name}`, onclick: () => {
+        if (!confirm(`Delete the saved ${p.pc.name}?`)) return;
+        saveParties(loadParties().filter((x) => x.pc.name !== p.pc.name));
+        renderParties();
+      } }, '🗑'),
+      h('button', { class: 'btn primary small', onclick: () => useParty(p) }, 'Use'))) : [h('p', { class: 'muted small' }, 'Nothing saved yet. Create your character, then tap 💾 Save party.')]));
+  }
+  function openParties() {
+    renderParties();
+    if (!partyDlg.open) partyDlg.showModal();
+  }
+  $('#btn-party-open').addEventListener('click', openParties);
+  $('#btn-party-close').addEventListener('click', () => partyDlg.close());
+  $('#btn-party-new').addEventListener('click', () => { partyDlg.close(); openEditor('pc'); });
+  $('#btn-party-export').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({ type: 'dnd-turn-tracker-characters', parties: loadParties() }, null, 2)], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: 'my-characters.json' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  });
+  $('#party-import').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const incoming = (Array.isArray(data) ? data : data.parties || []).filter((p) => p && p.pc && typeof p.pc.name === 'string');
+      const byName = new Map(loadParties().map((p) => [p.pc.name.toLowerCase(), p]));
+      for (const p of incoming) byName.set(p.pc.name.toLowerCase(), { savedAt: Date.now(), companions: [], ...p });
+      saveParties([...byName.values()]);
+      toast(`Imported ${incoming.length} character(s).`);
+      renderParties();
+    } catch {
+      toast('That file is not a character list.', true);
+    }
+  });
+
+  /* ---------- DM music (YouTube / Spotify), local to the DM's device ---------- */
+  const MUSIC_KEY = 'dnd.music';
+  const music = Object.assign({ saved: [], current: '' }, store.get(MUSIC_KEY, {}));
+  let musicShown = null;
+
+  /** Turn a YouTube or Spotify link into its embeddable player URL (null if not recognised). */
+  function musicEmbed(link) {
+    let u;
+    const spUri = String(link).trim().match(/^spotify:(playlist|album|track|artist|episode|show):([A-Za-z0-9]+)$/);
+    if (spUri) return { kind: 'spotify', src: `https://open.spotify.com/embed/${spUri[1]}/${spUri[2]}`, height: 152 };
+    try { u = new URL(String(link).trim()); } catch { return null; }
+    const host = u.hostname.replace(/^www\.|^m\.|^music\./, '');
+    if (host === 'open.spotify.com') {
+      const m = u.pathname.match(/^\/(?:intl-[a-z-]+\/)?(?:embed\/)?(playlist|album|track|artist|episode|show)\/([A-Za-z0-9]+)/);
+      return m ? { kind: 'spotify', src: `https://open.spotify.com/embed/${m[1]}/${m[2]}`, height: 152 } : null;
+    }
+    if (host === 'youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
+      const list = u.searchParams.get('list');
+      let id = host === 'youtu.be' ? u.pathname.slice(1) : u.searchParams.get('v');
+      const path = u.pathname.match(/^\/(?:embed|shorts|live)\/([\w-]{6,})/);
+      if (!id && path) id = path[1];
+      if (id && !/^[\w-]{6,}$/.test(id)) id = null;
+      if (list && !/^[\w-]+$/.test(list)) return null;
+      const base = 'https://www.youtube-nocookie.com/embed/';
+      if (id) return { kind: 'youtube', src: `${base}${id}?rel=0&loop=1&${list ? `list=${list}` : `playlist=${id}`}`, height: 180 };
+      if (list) return { kind: 'youtube', src: `${base}videoseries?rel=0&loop=1&list=${list}`, height: 180 };
+    }
+    return null;
+  }
+
+  function showMusic(link) {
+    const e = link ? musicEmbed(link) : null;
+    musicShown = e ? link : null;
+    $('#music-player').replaceChildren(e
+      ? h('iframe', {
+        src: e.src, height: String(e.height), title: 'Music player', loading: 'eager', referrerpolicy: 'strict-origin-when-cross-origin',
+        allow: 'autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture',
+      })
+      : h('p', { class: 'muted small' }, 'Paste a YouTube or Spotify link below.'));
+    renderMusicSaved();
+  }
+  function stopMusic() {
+    if (musicShown) showMusic(null);
+  }
+  function persistMusic() {
+    store.set(MUSIC_KEY, music);
+  }
+  function renderMusicSaved() {
+    $('#music-saved').replaceChildren(...music.saved.map((m) => h('span', { class: `music-chip${m.url === musicShown ? ' playing' : ''}` },
+      h('button', { type: 'button', title: m.url, onclick: () => { music.current = m.url; persistMusic(); showMusic(m.url); } }, `▶ ${m.name}`),
+      h('button', { type: 'button', 'aria-label': `Remove ${m.name}`, onclick: () => {
+        music.saved = music.saved.filter((x) => x !== m);
+        persistMusic();
+        renderMusicSaved();
+      } }, '✕'))));
+  }
+  function readMusicForm() {
+    const url = $('#music-url').value.trim();
+    if (!musicEmbed(url)) { toast('Paste a YouTube or Spotify link (video, playlist, album…).', true); return null; }
+    return { url, name: $('#music-name').value.trim() || (url.includes('spotify') ? 'Spotify' : 'YouTube') };
+  }
+  $('#music-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const m = readMusicForm();
+    if (!m) return;
+    music.current = m.url;
+    persistMusic();
+    showMusic(m.url);
+  });
+  $('#btn-music-save').addEventListener('click', () => {
+    const m = readMusicForm();
+    if (!m) return;
+    music.saved = [...music.saved.filter((x) => x.url !== m.url), m].slice(-30);
+    persistMusic();
+    $('#music-url').value = '';
+    $('#music-name').value = '';
+    renderMusicSaved();
+    toast(`💾 "${m.name}" saved.`);
+  });
+  $('#btn-music-toggle').addEventListener('click', () => {
+    const dock = $('#music-dock');
+    const open = dock.classList.toggle('collapsed') === false;
+    $('#btn-music-toggle').setAttribute('aria-expanded', String(open));
+    $('#btn-music-toggle').textContent = open ? '🎵 Hide' : musicShown ? '🎵 Music ♪' : '🎵 Music';
+    if (open && musicShown === null && music.current) showMusic(music.current);
+  });
+  renderMusicSaved();
+
+  function renderMusic() {
+    const dm = isDm();
+    $('#music-dock').hidden = !dm;
+    if (!dm) stopMusic();
   }
 
   function fillSelect(sel, options, keep) {

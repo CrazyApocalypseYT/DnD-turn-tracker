@@ -20,12 +20,15 @@ test('room codes are 5 chars and the creator is the DM', () => {
   assert.equal(room.members.p1.role, 'player');
 });
 
-test('players get exactly one character and one friendly NPC', () => {
+test('players get exactly one character and up to 3 friendly NPCs', () => {
   const room = setup();
   g.saveCombatant(room, 'p1', pc('Aria', 15, { stats: [{ key: 'Spell DC', value: '14' }] }));
   assert.throws(() => g.saveCombatant(room, 'p1', pc('Aria 2', 10)), /already have a character/);
   g.saveCombatant(room, 'p1', { type: 'companion', name: 'Wolf', hpMax: 11, ac: 13, initiative: 12 });
-  assert.throws(() => g.saveCombatant(room, 'p1', { type: 'companion', name: 'Hawk', hpMax: 5 }), /one friendly NPC/);
+  g.saveCombatant(room, 'p1', { type: 'companion', name: 'Hawk', hpMax: 5 });
+  g.saveCombatant(room, 'p1', { type: 'companion', name: 'Imp', hpMax: 4 });
+  assert.throws(() => g.saveCombatant(room, 'p1', { type: 'companion', name: 'Owl', hpMax: 1 }), /up to 3 friendly NPCs/);
+  g.saveCombatant(room, 'p2', { type: 'companion', name: 'Bob\'s mule', hpMax: 11 }); // the limit is per player
   assert.throws(() => g.saveCombatant(room, 'p1', { type: 'enemy', name: 'Goblin', hpMax: 7 }), /Only the Dungeon Master/);
   const aria = room.combatants.find((c) => c.name === 'Aria');
   assert.deepEqual(aria.stats, [{ key: 'Spell DC', value: '14' }]);

@@ -46,6 +46,7 @@ const LIMITS = {
   enemyBatch: 50,
   log: 60,
   members: 30,
+  companions: 3, // friendly NPCs per player
 };
 
 const TYPES = ['pc', 'companion', 'enemy'];
@@ -437,12 +438,13 @@ function saveCombatant(room, clientId, input) {
     return created;
   }
 
-  // pc / companion: one of each per player
+  // pc / companion: one character and up to LIMITS.companions friendly NPCs per player
   if (member.role === 'screen') throw new GameError('The table screen only displays the fight.');
   if (member.role === 'dm') throw new GameError('The Dungeon Master controls enemies; players add their own characters.');
-  const already = room.combatants.find((c) => c.owner === member.id && c.type === type);
-  if (already) {
-    throw new GameError(type === 'pc' ? 'You already have a character. Edit it instead.' : 'Each player can only have one friendly NPC.');
+  const owned = room.combatants.filter((c) => c.owner === member.id && c.type === type);
+  if (type === 'pc' && owned.length) throw new GameError('You already have a character. Edit it instead.');
+  if (type === 'companion' && owned.length >= LIMITS.companions) {
+    throw new GameError(`Each player can have up to ${LIMITS.companions} friendly NPCs.`);
   }
   if (room.combatants.length >= LIMITS.combatants) throw new GameError('Too many creatures in this room.');
   const c = { id: randomId(), type, owner: member.id, order: room.nextOrder++, hidden: false, ...f, conditions: [] };

@@ -565,3 +565,32 @@ button.badge.host { font: inherit; font-size: 0.75rem; font-weight: 700; color: 
 .map-wrap:fullscreen .map-note, .map-wrap.pseudo-fs .map-note { display: none; }
 .d-map { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 0.7rem; }
 .display.idle .d-map { order: -3; }
+
+/* ======================= saved characters ======================= */
+.party-tools { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+#party-dialog { width: min(560px, calc(100vw - 1.5rem)); }
+
+/* ======================= DM music dock ======================= */
+.music-dock {
+  position: fixed; right: 0.8rem; bottom: 0.8rem; z-index: 60;
+  width: min(360px, calc(100vw - 1.6rem));
+  display: flex; flex-direction: column; align-items: flex-end; gap: 0.4rem;
+}
+.music-pill {
+  font: inherit; font-weight: 800; color: #1d1606; background: var(--accent); border: 0; cursor: pointer;
+  padding: 0.5rem 0.9rem; border-radius: 999px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.music-body {
+  width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 0.6rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 0.45rem;
+}
+/* collapsed: move the player off screen instead of removing it, so the music keeps playing */
+.music-dock.collapsed .music-body { position: fixed; left: -10000px; top: 0; }
+.music-player iframe { width: 100%; border: 0; border-radius: 10px; display: block; }
+.music-form { display: grid; grid-template-columns: minmax(0, 1fr) 6.5rem auto auto; gap: 0.3rem; }
+.music-saved { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.music-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.music-chip button { font: inherit; font-size: 0.82rem; font-weight: 600; color: var(--text); background: none; border: 0; padding: 0.25rem 0.55rem; cursor: pointer; }
+.music-chip button + button { border-left: 1px solid var(--line); color: var(--muted); }
+.music-chip.playing { border-color: var(--accent); }
+@media (max-width: 520px) { .music-form { grid-template-columns: minmax(0, 1fr) auto auto; } .music-form #music-name { grid-column: 1 / -1; grid-row: 2; } }
